@@ -10,6 +10,10 @@ import {
 } from 'lucide-react';
 import { COURSES } from '../data/academyData';
 import { EDUCATIONAL_STAGES, StudentRecord } from '../types/student';
+import {
+  apiFetchSupervisorStudents,
+  apiUpdateSupervisorStudent,
+} from '../utils/apiClient';
 
 interface SupervisorDashboardProps {
   supervisorName: string;
@@ -42,17 +46,12 @@ export function SupervisorDashboard({
     setLoading(true);
     setErrorMsg('');
     try {
-      const res = await fetch('/api/supervisor/students', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMsg(data.error || 'تعذر تحميل بيانات الطلاب.');
+      const result = await apiFetchSupervisorStudents(token);
+      if (!result.ok) {
+        setErrorMsg(result.error);
         return;
       }
-      setStudents(data.students || []);
-    } catch {
-      setErrorMsg('تعذر الاتصال بالخادم.');
+      setStudents(result.students);
     } finally {
       setLoading(false);
     }
@@ -99,24 +98,16 @@ export function SupervisorDashboard({
     setSaving(true);
     setSavedNotice(false);
     try {
-      const res = await fetch(`/api/supervisor/students/${selectedStudent.id}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          supervisorNotes: editNotes,
-          attendanceRate: editAttendance,
-          unlockedCourseIds: editCourses,
-        }),
+      const result = await apiUpdateSupervisorStudent(selectedStudent.id, token, {
+        supervisorNotes: editNotes,
+        attendanceRate: editAttendance,
+        unlockedCourseIds: editCourses,
       });
-      const data = await res.json();
-      if (res.ok && data.student) {
+      if (result.ok) {
         setStudents((prev) =>
-          prev.map((s) => (s.id === data.student.id ? data.student : s))
+          prev.map((s) => (s.id === result.student.id ? result.student : s))
         );
-        setSelectedStudent(data.student);
+        setSelectedStudent(result.student);
         setSavedNotice(true);
       }
     } finally {

@@ -34,6 +34,7 @@ import { StudentAuthModal } from './components/StudentAuthModal';
 import { ParentPortalView } from './components/ParentPortalView';
 import { BooksStoreSection } from './components/BooksStoreSection';
 import { SupervisorDashboard } from './components/SupervisorDashboard';
+import { apiSyncStudentProgress } from './utils/apiClient';
 
 type AppView =
   | 'home'
@@ -140,23 +141,12 @@ export default function App() {
     if (nextSession.role !== 'student' || !nextSession.studentId || !nextSession.token) {
       return;
     }
-    try {
-      await fetch(`/api/students/${nextSession.studentId}/progress`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${nextSession.token}`,
-        },
-        body: JSON.stringify({
-          unlockedCourseIds: nextSession.unlockedCourseIds,
-          completedLessonIds: nextSession.completedLessonIds,
-          notesByLesson: nextSession.notesByLesson,
-          quizAnswers: nextSession.quizAnswers,
-        }),
-      });
-    } catch {
-      // Ignore offline sync errors
-    }
+    await apiSyncStudentProgress(nextSession.studentId, nextSession.token, {
+      unlockedCourseIds: nextSession.unlockedCourseIds,
+      completedLessonIds: nextSession.completedLessonIds,
+      notesByLesson: nextSession.notesByLesson,
+      quizAnswers: nextSession.quizAnswers,
+    });
   };
 
   const activeCourse: Course =

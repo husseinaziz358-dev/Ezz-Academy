@@ -7,6 +7,7 @@ import {
   SECONDARY_BRANCHES,
   StudentRecord,
 } from '../types/student';
+import { apiLogin, apiRegisterStudent } from '../utils/apiClient';
 
 interface StudentAuthModalProps {
   onStudentAuthenticated: (student: StudentRecord, token: string) => void;
@@ -55,34 +56,24 @@ export function StudentAuthModal({
     setErrorMsg('');
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone: loginPhone,
-          password: loginPassword,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMsg(data.error || 'رقم الهاتف أو كلمة المرور غير صحيحة.');
+      const result = await apiLogin(loginPhone, loginPassword);
+      if (!result.ok) {
+        setErrorMsg(result.error);
         return;
       }
 
-      if (data.role === 'supervisor') {
+      if (result.role === 'supervisor') {
         onSupervisorAuthenticated({
-          name: data.name,
-          phone: data.phone,
-          token: data.token,
+          name: result.name,
+          phone: result.phone,
+          token: result.token,
         });
         onClose();
         return;
       }
 
-      onStudentAuthenticated(data.student, data.token);
+      onStudentAuthenticated(result.student, result.token);
       onClose();
-    } catch {
-      setErrorMsg('حدث خطأ في الاتصال بالخادم.');
     } finally {
       setLoading(false);
     }
@@ -93,29 +84,22 @@ export function StudentAuthModal({
     setErrorMsg('');
     setLoading(true);
     try {
-      const res = await fetch('/api/students/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentName,
-          studentPhone,
-          parentName,
-          parentPhone,
-          motherName,
-          stage,
-          specialization,
-          password: registerPassword,
-        }),
+      const result = await apiRegisterStudent({
+        studentName,
+        studentPhone,
+        parentName,
+        parentPhone,
+        motherName,
+        stage,
+        specialization,
+        password: registerPassword,
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMsg(data.error || 'تعذر إنشاء الحساب. راجع البيانات وحاول مجددًا.');
+      if (!result.ok) {
+        setErrorMsg(result.error);
         return;
       }
-      onStudentAuthenticated(data.student, data.token);
+      onStudentAuthenticated(result.student, result.token);
       onClose();
-    } catch {
-      setErrorMsg('حدث خطأ في الاتصال بالخادم.');
     } finally {
       setLoading(false);
     }

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { COURSES, DEMO_PARENT_EXAMS, getCourseAllLessons } from '../data/academyData';
 import { StudentRecord } from '../types/student';
+import { apiLookupParent } from '../utils/apiClient';
 
 interface ParentPortalViewProps {
   defaultPhone?: string;
@@ -40,16 +41,13 @@ export function ParentPortalView({ defaultPhone = '', onBackHome }: ParentPortal
     setLoading(true);
     setErrorMsg('');
     try {
-      const res = await fetch(`/api/parent/lookup?phone=${encodeURIComponent(cleaned)}`);
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMsg(data.error || 'لم يتم العثور على بيانات بهذا الرقم.');
+      const result = await apiLookupParent(cleaned);
+      if (!result.ok) {
+        setErrorMsg(result.error);
         setStudent(null);
         return;
       }
-      setStudent(data.student);
-    } catch {
-      setErrorMsg('حدث خطأ أثناء الاتصال بالخادم.');
+      setStudent(result.student);
     } finally {
       setLoading(false);
     }

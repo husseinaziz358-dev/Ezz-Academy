@@ -1,4 +1,5 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -133,7 +134,7 @@ async function ensureDb(): Promise<StudentRecord[]> {
     const parsed = JSON.parse(raw) as StudentRecord[];
     if (Array.isArray(parsed)) return parsed;
   } catch {
-    // Initialize with seed data if missing
+    // Initialize with seed data if missing or invalid
   }
   await fs.writeFile(DB_FILE, JSON.stringify(SEED_STUDENTS, null, 2), 'utf-8');
   return [...SEED_STUDENTS];
@@ -182,7 +183,13 @@ function verifyToken(
 }
 
 function normalizePhone(phone: string): string {
-  return phone.replace(/\s+/g, '').trim();
+  const arabicDigits = '٠١٢٣٤٥٦٧٨٩';
+  const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
+  return phone
+    .replace(/[٠-٩]/g, (d) => String(arabicDigits.indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String(persianDigits.indexOf(d)))
+    .replace(/\s+/g, '')
+    .trim();
 }
 
 function requireSupervisor(req: Request, res: Response, next: NextFunction) {
@@ -201,192 +208,163 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.json({ ok: true });
+  });
+
   // Unified login endpoint: authenticates either supervisor or student seamlessly
   app.post('/api/auth/login', async (req: Request, res: Response) => {
-    const phone = normalizePhone(String(req.body?.phone ?? ''));
-    const password = String(req.body?.password ?? '');
+    try {
+      const phone = normalizePhone(String(req.body?.phone ?? ''));
+      const password = String(req.body?.password ?? '');
 
-    if (!phone || !password) {
-      res.status(400).json({ error: 'يرجى إدخال رقم الهاتف وكلمة المرور.' });
-      return;
-    }
+      if (!phone || !password) {
+        res.status(400).json({ error: 'يرجى إدخال رقم الهاتف وكلمة المرور.' });
+        return;
+      }
 
-    if (phone === SUPERVISOR_PHONE) {
-      const inputHash = crypto.scryptSync(password, SUPERVISOR_SALT, 64);
-      const targetHash = Buffer.from(SUPERVISOR_PASSWORD_HASH, 'hex');
-      const passwordMatch =
-        inputHash.length === targetHash.length &&
-        crypto.timingSafeEqual(inputHash, targetHash);
+      if (phone === SUPERVISOR_PHONE) {
+        const inputHash = crypto.scryptSync(password, SUPERVISOR_SALT, 64);
+        const targetHash = Buffer.from(SUPERVISOR_PASSWORD_HASH, 'hex');
+        const passwordMatch =
+          inputHash.length === targetHash.length &&
+          crypto.timingSafeEqual(inputHash, targetHash);
 
-      if (!passwordMatch) {
+        if (!passwordMatch) {
+          res.status(401).json({ error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' });
+          return;
+        }
+
+        const token = signToken({ role: 'supervisor', sub: SUPERVISOR_PHONE });
+        res.json({
+          role: 'supervisor',
+          phone: SUPERVISOR_PHONE,
+          name: 'المشرف العام — Ezz Academy',
+          token,
+        });
+        return;
+      }
+
+      const students = await ensureDb();
+      const student = students.find((s) => s.studentPhone === phone);
+      if (!student) {
         res.status(401).json({ error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' });
         return;
       }
 
-      const token = signToken({ role: 'supervisor', sub: SUPERVISOR_PHONE });
+      if (student.passwordHash && !verifyStudentPassword(password, student.passwordHash)) {
+        res.status(401).json({ error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' });
+        return;
+      }
+
+      const token = signToken({ role: 'student', sub: student.id });
       res.json({
-        role: 'supervisor',
-        phone: SUPERVISOR_PHONE,
-        name: 'المشرف العام — Ezz Academy',
+        role: 'student',
+        student: sanitizeStudent(student),
         token,
       });
-      return;
+    } catch (err) {
+      console.error('Login error:', err);
+      res.status(500).json({ error: 'تعذر إتمام تسجيل الدخول على الخادم.' });
     }
-
-    const students = await ensureDb();
-    const student = students.find((s) => s.studentPhone === phone);
-    if (!student) {
-      res.status(401).json({ error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' });
-      return;
-    }
-
-    if (student.passwordHash && !verifyStudentPassword(password, student.passwordHash)) {
-      res.status(401).json({ error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' });
-      return;
-    }
-
-    const token = signToken({ role: 'student', sub: student.id });
-    res.json({
-      role: 'student',
-      student: sanitizeStudent(student),
-      token,
-    });
   });
 
   // Register a new student account
   app.post('/api/students/register', async (req: Request, res: Response) => {
-    const studentName = String(req.body?.studentName ?? '').trim();
-    const studentPhone = normalizePhone(String(req.body?.studentPhone ?? ''));
-    const parentName = String(req.body?.parentName ?? '').trim();
-    const parentPhone = normalizePhone(String(req.body?.parentPhone ?? ''));
-    const motherName = String(req.body?.motherName ?? '').trim();
-    const stage = String(req.body?.stage ?? '').trim();
-    const specialization = String(req.body?.specialization ?? '').trim();
-    const password = String(req.body?.password ?? '');
+    try {
+      const studentName = String(req.body?.studentName ?? '').trim();
+      const studentPhone = normalizePhone(String(req.body?.studentPhone ?? ''));
+      const parentName = String(req.body?.parentName ?? '').trim();
+      const parentPhone = normalizePhone(String(req.body?.parentPhone ?? ''));
+      const motherName = String(req.body?.motherName ?? '').trim();
+      const stage = String(req.body?.stage ?? '').trim();
+      const specialization = String(req.body?.specialization ?? '').trim();
+      const password = String(req.body?.password ?? '');
 
-    if (
-      !studentName ||
-      studentPhone.length < 8 ||
-      !parentName ||
-      parentPhone.length < 8 ||
-      !motherName ||
-      !stage ||
-      !specialization ||
-      password.length < 4
-    ) {
-      res.status(400).json({
-        error:
-          'يرجى استيفاء جميع البيانات وكلمة مرور لا تقل عن ٤ أحرف.',
-      });
-      return;
+      if (
+        !studentName ||
+        studentPhone.length < 8 ||
+        !parentName ||
+        parentPhone.length < 8 ||
+        !motherName ||
+        !stage ||
+        !specialization ||
+        password.length < 4
+      ) {
+        res.status(400).json({
+          error: 'يرجى استيفاء جميع البيانات وكلمة مرور لا تقل عن ٤ أحرف.',
+        });
+        return;
+      }
+
+      if (studentPhone === SUPERVISOR_PHONE) {
+        res.status(409).json({
+          error: 'هذا الرقم مسجل بالفعل في النظام.',
+        });
+        return;
+      }
+
+      const students = await ensureDb();
+      const duplicate = students.find((s) => s.studentPhone === studentPhone);
+      if (duplicate) {
+        res.status(409).json({
+          error: 'رقم الطالب مسجل بالفعل. يمكنك تسجيل الدخول مباشرة.',
+        });
+        return;
+      }
+
+      const specializationType = stage === 'البكالوريا' ? 'مسار' : 'شعبة';
+      const now = new Date().toISOString();
+      const newStudent: StudentRecord = {
+        id: `stu-${Date.now()}`,
+        studentName,
+        studentPhone,
+        parentName,
+        parentPhone,
+        motherName,
+        stage,
+        specializationType,
+        specialization,
+        passwordHash: hashStudentPassword(password),
+        unlockedCourseIds: ['course-sec3-pure-applied', 'course-sec1-math'],
+        completedLessonIds: [],
+        quizAnswers: {},
+        notesByLesson: {},
+        supervisorNotes: 'حساب جديد — في انتظار المراجعة الأولى.',
+        attendanceRate: 100,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      students.unshift(newStudent);
+      await saveDb(students);
+
+      const token = signToken({ role: 'student', sub: newStudent.id });
+      res.status(201).json({ student: sanitizeStudent(newStudent), token });
+    } catch (err) {
+      console.error('Register error:', err);
+      res.status(500).json({ error: 'تعذر تسجيل الحساب على الخادم.' });
     }
-
-    if (studentPhone === SUPERVISOR_PHONE) {
-      res.status(409).json({
-        error: 'هذا الرقم مسجل بالفعل في النظام.',
-      });
-      return;
-    }
-
-    const students = await ensureDb();
-    const duplicate = students.find((s) => s.studentPhone === studentPhone);
-    if (duplicate) {
-      res.status(409).json({
-        error: 'رقم الطالب مسجل بالفعل. يمكنك تسجيل الدخول مباشرة.',
-      });
-      return;
-    }
-
-    const specializationType = stage === 'البكالوريا' ? 'مسار' : 'شعبة';
-    const now = new Date().toISOString();
-    const newStudent: StudentRecord = {
-      id: `stu-${Date.now()}`,
-      studentName,
-      studentPhone,
-      parentName,
-      parentPhone,
-      motherName,
-      stage,
-      specializationType,
-      specialization,
-      passwordHash: hashStudentPassword(password),
-      unlockedCourseIds: ['course-sec3-pure-applied', 'course-sec1-math'],
-      completedLessonIds: [],
-      quizAnswers: {},
-      notesByLesson: {},
-      supervisorNotes: 'حساب جديد — في انتظار المراجعة الأولى.',
-      attendanceRate: 100,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    students.unshift(newStudent);
-    await saveDb(students);
-
-    const token = signToken({ role: 'student', sub: newStudent.id });
-    res.status(201).json({ student: sanitizeStudent(newStudent), token });
   });
 
   // Sync student learning progress
   app.patch('/api/students/:id/progress', async (req: Request, res: Response) => {
-    const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-    const decoded = verifyToken(token);
-    if (!decoded) {
-      res.status(401).json({ error: 'غير مصرح.' });
-      return;
-    }
-    const targetId = req.params.id;
-    if (decoded.role === 'student' && decoded.sub !== targetId) {
-      res.status(403).json({ error: 'لا يمكنك تعديل بيانات طالب آخر.' });
-      return;
-    }
+    try {
+      const authHeader = req.headers.authorization || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const decoded = verifyToken(token);
+      if (!decoded) {
+        res.status(401).json({ error: 'غير مصرح.' });
+        return;
+      }
+      const targetId = req.params.id;
+      if (decoded.role === 'student' && decoded.sub !== targetId) {
+        res.status(403).json({ error: 'لا يمكنك تعديل بيانات طالب آخر.' });
+        return;
+      }
 
-    const students = await ensureDb();
-    const idx = students.findIndex((s) => s.id === targetId);
-    if (idx === -1) {
-      res.status(404).json({ error: 'الطالب غير موجود.' });
-      return;
-    }
-
-    const existing = students[idx];
-    const updated: StudentRecord = {
-      ...existing,
-      unlockedCourseIds: Array.isArray(req.body?.unlockedCourseIds)
-        ? req.body.unlockedCourseIds
-        : existing.unlockedCourseIds,
-      completedLessonIds: Array.isArray(req.body?.completedLessonIds)
-        ? req.body.completedLessonIds
-        : existing.completedLessonIds,
-      quizAnswers:
-        req.body?.quizAnswers && typeof req.body.quizAnswers === 'object'
-          ? req.body.quizAnswers
-          : existing.quizAnswers,
-      notesByLesson:
-        req.body?.notesByLesson && typeof req.body.notesByLesson === 'object'
-          ? req.body.notesByLesson
-          : existing.notesByLesson,
-      updatedAt: new Date().toISOString(),
-    };
-
-    students[idx] = updated;
-    await saveDb(students);
-    res.json({ student: sanitizeStudent(updated) });
-  });
-
-  // Supervisor: list all students
-  app.get('/api/supervisor/students', requireSupervisor, async (_req: Request, res: Response) => {
-    const students = await ensureDb();
-    res.json({ students: students.map(sanitizeStudent) });
-  });
-
-  // Supervisor: update student follow-up notes, attendance, or unlocked courses
-  app.patch(
-    '/api/supervisor/students/:id',
-    requireSupervisor,
-    async (req: Request, res: Response) => {
       const students = await ensureDb();
-      const idx = students.findIndex((s) => s.id === req.params.id);
+      const idx = students.findIndex((s) => s.id === targetId);
       if (idx === -1) {
         res.status(404).json({ error: 'الطالب غير موجود.' });
         return;
@@ -395,45 +373,119 @@ async function startServer() {
       const existing = students[idx];
       const updated: StudentRecord = {
         ...existing,
-        supervisorNotes:
-          typeof req.body?.supervisorNotes === 'string'
-            ? req.body.supervisorNotes
-            : existing.supervisorNotes,
-        attendanceRate:
-          typeof req.body?.attendanceRate === 'number'
-            ? Math.max(0, Math.min(100, req.body.attendanceRate))
-            : existing.attendanceRate,
         unlockedCourseIds: Array.isArray(req.body?.unlockedCourseIds)
           ? req.body.unlockedCourseIds
           : existing.unlockedCourseIds,
+        completedLessonIds: Array.isArray(req.body?.completedLessonIds)
+          ? req.body.completedLessonIds
+          : existing.completedLessonIds,
+        quizAnswers:
+          req.body?.quizAnswers && typeof req.body.quizAnswers === 'object'
+            ? req.body.quizAnswers
+            : existing.quizAnswers,
+        notesByLesson:
+          req.body?.notesByLesson && typeof req.body.notesByLesson === 'object'
+            ? req.body.notesByLesson
+            : existing.notesByLesson,
         updatedAt: new Date().toISOString(),
       };
 
       students[idx] = updated;
       await saveDb(students);
       res.json({ student: sanitizeStudent(updated) });
+    } catch (err) {
+      console.error('Progress update error:', err);
+      res.status(500).json({ error: 'تعذر حفظ التقدم.' });
+    }
+  });
+
+  // Supervisor: list all students
+  app.get('/api/supervisor/students', requireSupervisor, async (_req: Request, res: Response) => {
+    try {
+      const students = await ensureDb();
+      res.json({ students: students.map(sanitizeStudent) });
+    } catch (err) {
+      console.error('Supervisor list error:', err);
+      res.status(500).json({ error: 'تعذر تحميل قائمة الطلاب.' });
+    }
+  });
+
+  // Supervisor: update student follow-up notes, attendance, or unlocked courses
+  app.patch(
+    '/api/supervisor/students/:id',
+    requireSupervisor,
+    async (req: Request, res: Response) => {
+      try {
+        const students = await ensureDb();
+        const idx = students.findIndex((s) => s.id === req.params.id);
+        if (idx === -1) {
+          res.status(404).json({ error: 'الطالب غير موجود.' });
+          return;
+        }
+
+        const existing = students[idx];
+        const updated: StudentRecord = {
+          ...existing,
+          supervisorNotes:
+            typeof req.body?.supervisorNotes === 'string'
+              ? req.body.supervisorNotes
+              : existing.supervisorNotes,
+          attendanceRate:
+            typeof req.body?.attendanceRate === 'number'
+              ? Math.max(0, Math.min(100, req.body.attendanceRate))
+              : existing.attendanceRate,
+          unlockedCourseIds: Array.isArray(req.body?.unlockedCourseIds)
+            ? req.body.unlockedCourseIds
+            : existing.unlockedCourseIds,
+          updatedAt: new Date().toISOString(),
+        };
+
+        students[idx] = updated;
+        await saveDb(students);
+        res.json({ student: sanitizeStudent(updated) });
+      } catch (err) {
+        console.error('Supervisor update error:', err);
+        res.status(500).json({ error: 'تعذر تحديث بيانات الطالب.' });
+      }
     }
   );
 
   // Parent lookup by parentPhone or studentPhone
   app.get('/api/parent/lookup', async (req: Request, res: Response) => {
-    const phone = normalizePhone(String(req.query.phone ?? ''));
-    if (!phone) {
-      res.status(400).json({ error: 'يرجى إدخال رقم الهاتف.' });
-      return;
+    try {
+      const phone = normalizePhone(String(req.query.phone ?? ''));
+      if (!phone) {
+        res.status(400).json({ error: 'يرجى إدخال رقم الهاتف.' });
+        return;
+      }
+      const students = await ensureDb();
+      const found = students.find(
+        (s) => s.parentPhone === phone || s.studentPhone === phone
+      );
+      if (!found) {
+        res.status(404).json({ error: 'لم يتم العثور على طالب مرتبط بهذا الرقم.' });
+        return;
+      }
+      res.json({ student: sanitizeStudent(found) });
+    } catch (err) {
+      console.error('Parent lookup error:', err);
+      res.status(500).json({ error: 'تعذر الاستعلام عن بيانات الطالب.' });
     }
-    const students = await ensureDb();
-    const found = students.find(
-      (s) => s.parentPhone === phone || s.studentPhone === phone
-    );
-    if (!found) {
-      res.status(404).json({ error: 'لم يتم العثور على طالب مرتبط بهذا الرقم.' });
-      return;
-    }
-    res.json({ student: sanitizeStudent(found) });
   });
 
-  if (process.env.NODE_ENV === 'production') {
+  // Ensure unmatched /api/* routes always return JSON
+  app.use('/api', (_req: Request, res: Response) => {
+    res.status(404).json({ error: 'المسار المطلوب غير موجود.' });
+  });
+
+  // Express JSON error handler
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    console.error('Unhandled server error:', err);
+    res.status(500).json({ error: 'حدث خطأ داخلي في الخادم.' });
+  });
+
+  const isProd = process.env.NODE_ENV === 'production';
+  if (isProd) {
     const distPath = path.join(__dirname, 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req: Request, res: Response) => {
