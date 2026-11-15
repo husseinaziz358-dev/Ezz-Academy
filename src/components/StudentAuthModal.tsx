@@ -8,10 +8,6 @@ import {
   StudentRecord,
 } from '../types/student';
 import { apiLogin, apiRegisterStudent } from '../utils/apiClient';
-import {
-  createFirebaseStudentProfile,
-  signInWithGooglePopup,
-} from '../services/firebaseStudents';
 
 interface StudentAuthModalProps {
   onStudentAuthenticated: (student: StudentRecord, token: string) => void;
@@ -47,10 +43,6 @@ export function StudentAuthModal({
     SECONDARY_BRANCHES['الصف الثالث الثانوي'][0]
   );
   const [registerPassword, setRegisterPassword] = useState('');
-  const [googlePending, setGooglePending] = useState<{
-    uid: string;
-    email: string;
-  } | null>(null);
 
   const handleStageChange = (nextStage: EducationalStage) => {
     setStage(nextStage);
@@ -89,67 +81,11 @@ export function StudentAuthModal({
     }
   };
 
-  const handleGoogleSignIn = async () => {
-    setErrorMsg('');
-    setLoading(true);
-    try {
-      const res = await signInWithGooglePopup();
-      if (!res.ok) {
-        setErrorMsg(res.error);
-        return;
-      }
-      if (res.role === 'supervisor') {
-        onSupervisorAuthenticated({
-          name: res.name,
-          phone: res.phone,
-          token: res.token,
-        });
-        onClose();
-        return;
-      }
-      if (!res.needsProfile) {
-        onStudentAuthenticated(res.student, res.token);
-        onClose();
-        return;
-      }
-      setGooglePending({ uid: res.uid, email: res.email });
-      if (res.displayName && !studentName) {
-        setStudentName(res.displayName);
-      }
-      setActiveTab('register');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setLoading(true);
     try {
-      if (googlePending) {
-        const fbRes = await createFirebaseStudentProfile(
-          googlePending.uid,
-          googlePending.email,
-          {
-            studentName,
-            studentPhone,
-            parentName,
-            parentPhone,
-            motherName,
-            stage,
-            specialization,
-          }
-        );
-        if (!fbRes.ok) {
-          setErrorMsg(fbRes.error);
-          return;
-        }
-        onStudentAuthenticated(fbRes.student, fbRes.token);
-        onClose();
-        return;
-      }
-
       const result = await apiRegisterStudent({
         studentName,
         studentPhone,
@@ -228,7 +164,7 @@ export function StudentAuthModal({
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            {googlePending ? 'استكمال بيانات الطالب' : 'إنشاء حساب طالب جديد'}
+            إنشاء حساب طالب جديد
           </button>
         </div>
 
@@ -308,42 +244,6 @@ export function StudentAuthModal({
                 {loading ? 'جاري الدخول...' : 'تسجيل الدخول'}
               </button>
             </div>
-
-            <div className="relative py-2">
-              <div className="absolute inset-0 flex items-center" aria-hidden="true">
-                <div className="w-full border-t border-slate-200" />
-              </div>
-              <div className="relative flex justify-center text-xs">
-                <span className="bg-white px-3 text-slate-500">أو الدخول السريع</span>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleGoogleSignIn}
-              disabled={loading}
-              className="w-full inline-flex items-center justify-center gap-2.5 px-4 py-2.5 text-sm font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-60 cursor-pointer"
-            >
-              <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  fill="#4285F4"
-                  d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
-                />
-                <path
-                  fill="#34A853"
-                  d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
-                />
-                <path
-                  fill="#EA4335"
-                  d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
-                />
-              </svg>
-              <span>تسجيل الدخول بحساب Google</span>
-            </button>
           </form>
         )}
 
@@ -446,53 +346,39 @@ export function StudentAuthModal({
                 />
               </div>
 
-              {!googlePending ? (
-                <div>
-                  <label
-                    htmlFor="reg-password"
-                    className="block text-xs font-semibold text-slate-700 mb-1"
-                  >
-                    كلمة المرور
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="reg-password"
-                      type={showRegisterPassword ? 'text' : 'password'}
-                      dir="ltr"
-                      required
-                      minLength={4}
-                      value={registerPassword}
-                      onChange={(e) => setRegisterPassword(e.target.value)}
-                      placeholder="••••••"
-                      className="w-full pl-10 pr-3 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowRegisterPassword((s) => !s)}
-                      aria-label={showRegisterPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                      className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-800"
-                    >
-                      {showRegisterPassword ? (
-                        <EyeOff className="w-4 h-4" />
-                      ) : (
-                        <Eye className="w-4 h-4" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <span className="block text-xs font-semibold text-slate-700 mb-1">
-                    الحساب المرتبط
-                  </span>
-                  <div
+              <div>
+                <label
+                  htmlFor="reg-password"
+                  className="block text-xs font-semibold text-slate-700 mb-1"
+                >
+                  كلمة المرور
+                </label>
+                <div className="relative">
+                  <input
+                    id="reg-password"
+                    type={showRegisterPassword ? 'text' : 'password'}
                     dir="ltr"
-                    className="px-3 py-2 text-xs font-mono bg-blue-50 text-blue-900 border border-blue-200 rounded-lg truncate"
+                    required
+                    minLength={4}
+                    value={registerPassword}
+                    onChange={(e) => setRegisterPassword(e.target.value)}
+                    placeholder="••••••"
+                    className="w-full pl-10 pr-3 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowRegisterPassword((s) => !s)}
+                    aria-label={showRegisterPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-800"
                   >
-                    {googlePending.email}
-                  </div>
+                    {showRegisterPassword ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
                 </div>
-              )}
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">

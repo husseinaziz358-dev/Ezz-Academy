@@ -8,7 +8,6 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
-  KeyRound,
   Lock,
   Menu,
   Search,
@@ -29,10 +28,8 @@ import { StudentRecord } from './types/student';
 import { ResilientImage } from './components/ResilientImage';
 import { ClassroomView } from './components/ClassroomView';
 import { ProgressDashboard } from './components/ProgressDashboard';
-import { CodeActivationModal } from './components/CodeActivationModal';
 import { StudentAuthModal } from './components/StudentAuthModal';
 import { ParentPortalView } from './components/ParentPortalView';
-import { BooksStoreSection } from './components/BooksStoreSection';
 import { SupervisorDashboard } from './components/SupervisorDashboard';
 import { apiSyncStudentProgress } from './utils/apiClient';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -45,7 +42,6 @@ import {
 type AppView =
   | 'home'
   | 'courses'
-  | 'books'
   | 'classroom'
   | 'dashboard'
   | 'parent'
@@ -108,7 +104,6 @@ export default function App() {
   const [selectedCategory, setSelectedCategory] = useState<'الكل' | CourseCategory>('الكل');
   const [selectedInstructorId, setSelectedInstructorId] = useState<string>('الكل');
   const [mobileNavOpen, setMobileNavOpen] = useState<boolean>(false);
-  const [showActivationModal, setShowActivationModal] = useState<boolean>(false);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
 
   const [session, setSession] = useState<SessionState>(() => {
@@ -251,17 +246,6 @@ export default function App() {
     });
   };
 
-  const handleActivateCourses = (courseIds: string[]) => {
-    setSession((prev) => {
-      const next: SessionState = {
-        ...prev,
-        unlockedCourseIds: Array.from(new Set([...prev.unlockedCourseIds, ...courseIds])),
-      };
-      syncStudentProgressToServer(next);
-      return next;
-    });
-  };
-
   const handleStudentAuthenticated = (student: StudentRecord, token: string) => {
     setSession({
       role: 'student',
@@ -359,15 +343,6 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => navigateTo('books')}
-              className={`hover:text-slate-900 hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                view === 'books' ? 'text-slate-900 font-semibold' : ''
-              }`}
-            >
-              الكتب والملازم
-            </button>
-            <button
-              type="button"
               onClick={() => navigateTo('parent')}
               className={`hover:text-slate-900 hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 view === 'parent' ? 'text-slate-900 font-semibold' : ''
@@ -418,13 +393,6 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => navigateTo('books')}
-              className="block w-full text-right px-3 py-2.5 text-sm font-medium text-slate-800 rounded-lg hover:bg-slate-100"
-            >
-              الكتب والملازم
-            </button>
-            <button
-              type="button"
               onClick={() => navigateTo('parent')}
               className="block w-full text-right px-3 py-2.5 text-sm font-medium text-slate-800 rounded-lg hover:bg-slate-100"
             >
@@ -463,7 +431,6 @@ export default function App() {
             onToggleLessonComplete={handleToggleLessonComplete}
             onSaveNote={handleSaveNote}
             onRecordQuizAnswer={handleRecordQuizAnswer}
-            onOpenActivationModal={() => setShowActivationModal(true)}
             onBackToCatalog={() => navigateTo('courses')}
           />
         ) : view === 'dashboard' ? (
@@ -479,7 +446,6 @@ export default function App() {
             notesByLesson={session.notesByLesson}
             quizAnswers={session.quizAnswers}
             onOpenCourse={openCourse}
-            onOpenActivationModal={() => setShowActivationModal(true)}
             onLogout={handleLogout}
           />
         ) : view === 'parent' ? (
@@ -487,20 +453,6 @@ export default function App() {
             defaultPhone={session.studentPhone}
             onBackHome={() => navigateTo('home')}
           />
-        ) : view === 'books' ? (
-          <div>
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
-              <button
-                type="button"
-                onClick={() => navigateTo('home')}
-                className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 hover:text-blue-900"
-              >
-                <ArrowRight className="w-4 h-4" />
-                <span>العودة للرئيسية</span>
-              </button>
-            </div>
-            <BooksStoreSection />
-          </div>
         ) : view === 'courses' ? (
           <section className="py-12 lg:py-16 bg-white min-h-[75vh]">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
@@ -520,7 +472,7 @@ export default function App() {
                       : `كورسات ${getInstructorById(selectedInstructorId).name}`}
                   </h1>
                   <p className="text-sm text-slate-600">
-                    اختر المرحلة والشعبة أو فعّل كود اشتراكك للدخول إلى قاعة الشرح.
+                    اختر المرحلة والشعبة أو تصفح تفاصيل الكورسات للدخول إلى قاعة الشرح.
                   </p>
                 </div>
 
@@ -687,16 +639,6 @@ export default function App() {
                                   : 'معاينة الحصة الأولى'}
                               </span>
                             </button>
-
-                            {!isUnlocked && (
-                              <button
-                                type="button"
-                                onClick={() => setShowActivationModal(true)}
-                                className="px-3.5 py-2.5 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                              >
-                                فعّل بالكود
-                              </button>
-                            )}
                           </div>
                         </div>
                       </article>
@@ -724,7 +666,7 @@ export default function App() {
                     </h1>
 
                     <p className="text-base sm:text-lg text-slate-600 leading-relaxed max-w-xl">
-                      منصة متخصصة لطلاب المرحلة الثانوية والبكالوريا؛ نخبة من المدرسين، شرح منهجي، متجر كتب وملازم، ومتابعة مباشرة لولي الأمر.
+                      منصة متخصصة لطلاب المرحلة الثانوية والبكالوريا؛ نخبة من المدرسين، شرح منهجي، ومتابعة مباشرة لولي الأمر.
                     </p>
 
                     <div className="flex flex-wrap items-center gap-3 pt-2">
@@ -739,15 +681,6 @@ export default function App() {
                       >
                         <span>تعرّف على المدرسين</span>
                         <ArrowLeft className="w-4 h-4" />
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setShowActivationModal(true)}
-                        className="inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold text-slate-800 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors whitespace-nowrap cursor-pointer"
-                      >
-                        <KeyRound className="w-4 h-4 text-blue-700" />
-                        <span>الاشتراك عن طريق الكود</span>
                       </button>
                     </div>
                   </div>
@@ -863,13 +796,6 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => navigateTo('books')}
-              className="hover:text-slate-900 transition-colors"
-            >
-              الكتب والملازم
-            </button>
-            <button
-              type="button"
               onClick={() => navigateTo('parent')}
               className="hover:text-slate-900 transition-colors"
             >
@@ -879,13 +805,6 @@ export default function App() {
           <div className="tabular-nums">© 2026 Ezz Academy. جميع الحقوق محفوظة.</div>
         </div>
       </footer>
-
-      {showActivationModal && (
-        <CodeActivationModal
-          onActivateCourses={handleActivateCourses}
-          onClose={() => setShowActivationModal(false)}
-        />
-      )}
 
       {showAuthModal && (
         <StudentAuthModal

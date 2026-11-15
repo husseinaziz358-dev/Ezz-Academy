@@ -1,4 +1,4 @@
-import { Award, BookOpen, CheckCircle2, FileText, KeyRound } from 'lucide-react';
+import { Award, BookOpen, CheckCircle2, FileText } from 'lucide-react';
 import { useState } from 'react';
 import {
   Course,
@@ -18,7 +18,6 @@ interface ProgressDashboardProps {
   notesByLesson: Record<string, string>;
   quizAnswers: Record<string, number>;
   onOpenCourse: (courseId: string) => void;
-  onOpenActivationModal: () => void;
   onLogout?: () => void;
 }
 
@@ -32,7 +31,6 @@ export function ProgressDashboard({
   notesByLesson,
   quizAnswers,
   onOpenCourse,
-  onOpenActivationModal,
   onLogout,
 }: ProgressDashboardProps) {
   const [certCourse, setCertCourse] = useState<Course | null>(null);
@@ -96,15 +94,6 @@ export function ProgressDashboard({
               className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
             />
           </div>
-
-          <button
-            type="button"
-            onClick={onOpenActivationModal}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors h-[38px] cursor-pointer"
-          >
-            <KeyRound className="w-4 h-4" />
-            <span>تفعيل كورس بكود</span>
-          </button>
 
           {onLogout && (
             <button

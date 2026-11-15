@@ -12,7 +12,6 @@ import {
   HelpCircle,
   FileText,
   Lock,
-  KeyRound,
 } from 'lucide-react';
 import {
   Course,
@@ -34,7 +33,6 @@ interface ClassroomViewProps {
   onToggleLessonComplete: (lessonId: string) => void;
   onSaveNote: (lessonId: string, note: string) => void;
   onRecordQuizAnswer: (lessonId: string, optionIndex: number) => void;
-  onOpenActivationModal: () => void;
   onBackToCatalog: () => void;
 }
 
@@ -52,7 +50,6 @@ export function ClassroomView({
   onToggleLessonComplete,
   onSaveNote,
   onRecordQuizAnswer,
-  onOpenActivationModal,
   onBackToCatalog,
 }: ClassroomViewProps) {
   const allLessons = useMemo(() => getCourseAllLessons(course), [course]);
@@ -140,16 +137,6 @@ export function ClassroomView({
         </div>
 
         <div className="flex items-center gap-3">
-          {!isUnlocked && (
-            <button
-              type="button"
-              onClick={onOpenActivationModal}
-              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <KeyRound className="w-4 h-4" />
-              <span>تفعيل الكورس بالكود</span>
-            </button>
-          )}
           <button
             type="button"
             onClick={() => setShowCertificate(true)}
@@ -228,18 +215,10 @@ export function ClassroomView({
           {!canAccessActiveLesson ? (
             <div className="bg-slate-900 text-white rounded-xl border border-slate-800 p-10 text-center space-y-4">
               <Lock className="w-10 h-10 text-amber-400 mx-auto" />
-              <h2 className="text-xl font-bold">هذه الحصة متاحة للمشتركين بالكود</h2>
+              <h2 className="text-xl font-bold">هذه الحصة متاحة للمشتركين في الكورس</h2>
               <p className="text-sm text-slate-300 max-w-md mx-auto leading-relaxed">
-                الحصة الأولى مجانية للتجربة. لتشغيل باقي حصص «{course.title}» والامتحانات الأسبوعية، أدخل كود الاشتراك الخاص بك.
+                الحصة الأولى مجانية للتجربة. لتشغيل باقي حصص «{course.title}» والامتحانات الأسبوعية، تواصل مع إدارة المنصة لتفعيل الاشتراك في حسابك.
               </p>
-              <button
-                type="button"
-                onClick={onOpenActivationModal}
-                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-600 transition-colors cursor-pointer"
-              >
-                <KeyRound className="w-4 h-4" />
-                <span>تفعيل الكورس بالكود الآن</span>
-              </button>
             </div>
           ) : stageMode === 'lab' ? (
             <InteractiveConceptLab kind={activeLesson.simulationKind} />
@@ -583,7 +562,7 @@ export function ClassroomView({
                             {lesson.title}
                           </div>
                           <div className="text-xs text-slate-400 font-mono tabular-nums">
-                            {lesson.durationMinutes} دقيقة {locked ? '· يتطلب كود' : ''}
+                            {lesson.durationMinutes} دقيقة {locked ? '· للمشتركين' : ''}
                           </div>
                         </button>
                       </div>
