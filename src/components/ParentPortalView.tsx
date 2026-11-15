@@ -6,32 +6,18 @@ import {
   ShieldCheck,
   ArrowRight,
 } from 'lucide-react';
-import {
-  COURSES,
-  DEMO_PARENT_EXAMS,
-  getCourseAllLessons,
-  GradeStage,
-} from '../data/academyData';
+import { COURSES, DEMO_PARENT_EXAMS, getCourseAllLessons } from '../data/academyData';
+import { StudentRecord } from '../types/student';
 
 interface ParentPortalViewProps {
-  studentName: string;
-  studentPhone: string;
-  studentGrade: GradeStage;
-  completedLessonIds: string[];
-  quizAnswers: Record<string, number>;
+  defaultPhone?: string;
   onBackHome: () => void;
 }
 
-export function ParentPortalView({
-  studentName,
-  studentPhone,
-  studentGrade,
-  completedLessonIds,
-  quizAnswers,
-  onBackHome,
-}: ParentPortalViewProps) {
-  const [phoneInput, setPhoneInput] = useState<string>('');
-  const [isVerified, setIsVerified] = useState<boolean>(false);
+export function ParentPortalView({ defaultPhone = '', onBackHome }: ParentPortalViewProps) {
+  const [phoneInput, setPhoneInput] = useState<string>(defaultPhone);
+  const [student, setStudent] = useState<StudentRecord | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
 
   const totalPlatformLessons = COURSES.reduce(
@@ -45,22 +31,42 @@ export function ParentPortalView({
     )
   );
 
-  const answeredCount = Object.keys(quizAnswers).length;
-  const correctCount = Object.entries(quizAnswers).filter(([id, opt]) => {
-    const entry = allLessonsMap.get(id);
-    return entry && entry.lesson.quiz.correctIndex === opt;
-  }).length;
+  const lookupStudent = async (phoneToLookup: string) => {
+    const cleaned = phoneToLookup.trim();
+    if (cleaned.length < 8) {
+      setErrorMsg('يرجى إدخال رقم هاتف صحيح.');
+      return;
+    }
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      const res = await fetch(`/api/parent/lookup?phone=${encodeURIComponent(cleaned)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMsg(data.error || 'لم يتم العثور على بيانات بهذا الرقم.');
+        setStudent(null);
+        return;
+      }
+      setStudent(data.student);
+    } catch {
+      setErrorMsg('حدث خطأ أثناء الاتصال بالخادم.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleParentLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    const cleaned = phoneInput.trim();
-    if (cleaned.length < 8) {
-      setErrorMsg('يرجى إدخال رقم هاتف صحيح مكون من ١١ رقمًا.');
-      return;
-    }
-    setErrorMsg('');
-    setIsVerified(true);
+    lookupStudent(phoneInput);
   };
+
+  const answeredCount = student ? Object.keys(student.quizAnswers).length : 0;
+  const correctCount = student
+    ? Object.entries(student.quizAnswers).filter(([id, opt]) => {
+        const entry = allLessonsMap.get(id);
+        return entry && entry.lesson.quiz.correctIndex === opt;
+      }).length
+    : 0;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-10">
@@ -78,12 +84,12 @@ export function ParentPortalView({
             بوابة متابعة ولي الأمر
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            متابعة لحظية لحضور الطالب في السنتر والأونلاين، درجات الامتحانات الشاملة، ونسب إنجاز الحصص.
+            استعلم برقم ولي الأمر أو رقم الطالب للاطلاع على سجل الحضور، الإنجاز، وملاحظات المشرف.
           </p>
         </div>
       </div>
 
-      {!isVerified ? (
+      {!student ? (
         <div className="max-w-lg mx-auto bg-white rounded-xl border border-slate-200 p-6 sm:p-8 space-y-6">
           <div className="flex items-center gap-2.5 text-slate-900">
             <ShieldCheck className="w-5 h-5 text-blue-700" />
@@ -91,13 +97,16 @@ export function ParentPortalView({
           </div>
 
           <p className="text-sm text-slate-600 leading-relaxed">
-            أدخل رقم هاتف الطالب المسجل على المنصة لعرض تقرير الأداء الدراسي والالتزام الأسبوعي.
+            أدخل رقم هاتف ولي الأمر أو رقم الطالب المسجل لعرض تقرير الأداء الدراسي والالتزام الأسبوعي.
           </p>
 
           <form onSubmit={handleParentLogin} className="space-y-4">
             <div>
-              <label htmlFor="parent-phone-lookup" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                رقم هاتف الطالب أو ولي الأمر
+              <label
+                htmlFor="parent-phone-lookup"
+                className="block text-xs font-semibold text-slate-700 mb-1.5"
+              >
+                رقم ولي الأمر أو رقم الطالب
               </label>
               <div className="relative">
                 <Phone className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
@@ -107,7 +116,7 @@ export function ParentPortalView({
                   dir="ltr"
                   value={phoneInput}
                   onChange={(e) => setPhoneInput(e.target.value)}
-                  placeholder={studentPhone}
+                  placeholder="01099887766"
                   className="w-full pr-10 pl-4 py-2.5 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 />
               </div>
@@ -122,20 +131,21 @@ export function ParentPortalView({
             <div className="flex flex-col sm:flex-row gap-3 pt-1">
               <button
                 type="submit"
-                className="flex-1 px-5 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors cursor-pointer"
+                disabled={loading}
+                className="flex-1 px-5 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors cursor-pointer disabled:opacity-60"
               >
-                عرض تقرير الطالب
+                {loading ? 'جاري البحث...' : 'عرض تقرير الطالب'}
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  setPhoneInput(studentPhone);
-                  setErrorMsg('');
-                  setIsVerified(true);
+                  const demoPhone = defaultPhone || '01099887766';
+                  setPhoneInput(demoPhone);
+                  lookupStudent(demoPhone);
                 }}
                 className="px-4 py-2.5 text-xs font-semibold text-slate-800 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors cursor-pointer"
               >
-                دخول سريع برقم الطالب الحالي
+                استعلام تجريبي سريع
               </button>
             </div>
           </form>
@@ -143,19 +153,29 @@ export function ParentPortalView({
       ) : (
         <div className="space-y-8">
           <div className="bg-white rounded-xl border border-slate-200 p-6 flex flex-wrap items-center justify-between gap-4">
-            <div>
+            <div className="space-y-1">
               <div className="text-xs text-slate-500">تقرير متابعة الطالب</div>
-              <h2 className="text-xl font-bold text-slate-900 mt-1">{studentName}</h2>
-              <div className="text-xs text-slate-600 mt-1">
-                {studentGrade} · رقم الهاتف: <span className="font-mono" dir="ltr">{phoneInput || studentPhone}</span>
+              <h2 className="text-xl font-bold text-slate-900">{student.studentName}</h2>
+              <div className="text-xs text-slate-600">
+                {student.stage} · {student.specializationType}: {student.specialization} · رقم الطالب:{' '}
+                <span className="font-mono" dir="ltr">
+                  {student.studentPhone}
+                </span>
+              </div>
+              <div className="text-xs text-slate-500">
+                ولي الأمر: {student.parentName} (
+                <span className="font-mono" dir="ltr">
+                  {student.parentPhone}
+                </span>
+                )
               </div>
             </div>
             <button
               type="button"
-              onClick={() => setIsVerified(false)}
+              onClick={() => setStudent(null)}
               className="px-4 py-2 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
             >
-              تغيير رقم الطالب
+              بحث برقم آخر
             </button>
           </div>
 
@@ -163,21 +183,25 @@ export function ParentPortalView({
             <div className="bg-white rounded-xl border border-slate-200 p-5">
               <div className="text-xs text-slate-500 mb-2">الحصص المكتملة على المنصة</div>
               <div className="text-2xl font-bold text-slate-900 tabular-nums">
-                {completedLessonIds.length} / {totalPlatformLessons}
+                {student.completedLessonIds.length} / {totalPlatformLessons}
               </div>
-              <div className="text-xs text-slate-500 mt-1">تحديث لحظي من غرفة الدراسة</div>
-            </div>
-
-            <div className="bg-white rounded-xl border border-slate-200 p-5">
-              <div className="text-xs text-slate-500 mb-2">متوسط درجات الامتحانات</div>
-              <div className="text-2xl font-bold text-slate-900 tabular-nums">88.5%</div>
-              <div className="text-xs text-emerald-700 font-medium mt-1">أداء منتظم ومرتفع</div>
+              <div className="text-xs text-slate-500 mt-1">تحديث مباشر من المنصة</div>
             </div>
 
             <div className="bg-white rounded-xl border border-slate-200 p-5">
               <div className="text-xs text-slate-500 mb-2">نسبة الحضور (سنتر وأونلاين)</div>
-              <div className="text-2xl font-bold text-slate-900 tabular-nums">95%</div>
-              <div className="text-xs text-slate-500 mt-1">١٩ من أصل ٢٠ حصة مجدولة</div>
+              <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                {student.attendanceRate}%
+              </div>
+              <div className="text-xs text-emerald-700 font-medium mt-1">مسجل من المشرف</div>
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 p-5">
+              <div className="text-xs text-slate-500 mb-2">الكورسات المفعلة</div>
+              <div className="text-2xl font-bold text-slate-900 tabular-nums">
+                {student.unlockedCourseIds.length}
+              </div>
+              <div className="text-xs text-slate-500 mt-1">كورسات فعالة حالياً</div>
             </div>
 
             <div className="bg-white rounded-xl border border-slate-200 p-5">
@@ -187,6 +211,11 @@ export function ParentPortalView({
               </div>
               <div className="text-xs text-slate-500 mt-1">الأسئلة المجابة داخل الدروس</div>
             </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-2">
+            <h3 className="text-sm font-bold text-slate-900">ملاحظة المشرف لولي الأمر</h3>
+            <p className="text-sm text-slate-600 leading-relaxed">{student.supervisorNotes}</p>
           </div>
 
           <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
@@ -235,13 +264,6 @@ export function ParentPortalView({
                 </tbody>
               </table>
             </div>
-          </div>
-
-          <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-2">
-            <h3 className="text-sm font-bold text-slate-900">ملاحظة المشرف الأكاديمي</h3>
-            <p className="text-sm text-slate-600 leading-relaxed">
-              مستوى الطالب في التفاضل وتطبيقات القيم العظمى متميز جدًا؛ يُنصح بمراجعة حصة الديناميكا التراكمية وحل ١٥ مسألة إضافية من بنك الأسئلة قبل الامتحان الشامل القادم.
-            </p>
           </div>
         </div>
       )}

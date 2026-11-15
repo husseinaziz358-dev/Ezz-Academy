@@ -49,6 +49,8 @@ export interface Instructor {
   name: string;
   role: string;
   specialty: string;
+  gradesLabel: string;
+  image: string;
   bio: string;
 }
 
@@ -115,6 +117,8 @@ export const INSTRUCTORS: Instructor[] = [
     name: 'م. عز الدين أحمد',
     role: 'مؤسس المنصة وأستاذ الرياضيات',
     specialty: 'الرياضيات البحتة والتطبيقية (عربي ولغات)',
+    gradesLabel: 'أولى · تانية · تالتة ثانوي',
+    image: '/src/assets/images/instructor_ezz_1794781375371.jpg',
     bio: 'خبرة ١٥ عامًا في تدريس رياضيات الثانوية العامة واللغات وتأهيل أوائل الجمهورية عبر منهجية الفهم التطبيقي.',
   },
   {
@@ -122,13 +126,17 @@ export const INSTRUCTORS: Instructor[] = [
     name: 'م. سلمى المنشاوي',
     role: 'رئيسة قسم البرمجة والذكاء الاصطناعي',
     specialty: 'Python والذكاء الاصطناعي للمرحلة الثانوية',
+    gradesLabel: 'المرحلة الثانوية · مسار البرمجة',
+    image: '/src/assets/images/instructor_salma_1794781374302.jpg',
     bio: 'مهندسة برمجيات متخصصة في تأهيل طلاب الثانوية لمسابقات البرمجة وبناء مشاريع الذكاء الاصطناعي.',
   },
   {
     id: 'inst-karim',
     name: 'م. كريم الشاذلي',
-    role: 'مدرس مساعد الإحصاء والرياضيات',
-    specialty: 'الإحصاء والتأسيس الرياضي',
+    role: 'مدرس الإحصاء والتأسيس الرياضي',
+    specialty: 'مراجعات الإنقاذ والإحصاء وأولى ثانوي',
+    gradesLabel: 'أولى ثانوي · مراجعات تالتة ثانوي',
+    image: '/src/assets/images/instructor_karim_1794781375680.jpg',
     bio: 'متخصص في المراجعات النهائية، حل بنوك الأسئلة، ومتابعة طلاب السنتر والأونلاين أسبوعيًا.',
   },
 ];
