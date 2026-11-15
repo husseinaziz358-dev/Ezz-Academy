@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ShieldCheck, UserCheck, UserPlus, X } from 'lucide-react';
+import { UserCheck, UserPlus, X } from 'lucide-react';
 import {
   BACCALAUREATE_TRACKS,
   EDUCATIONAL_STAGES,
@@ -14,16 +14,20 @@ interface StudentAuthModalProps {
   onClose: () => void;
 }
 
-type AuthTab = 'register' | 'student-login' | 'supervisor-login';
+type AuthTab = 'login' | 'register';
 
 export function StudentAuthModal({
   onStudentAuthenticated,
   onSupervisorAuthenticated,
   onClose,
 }: StudentAuthModalProps) {
-  const [activeTab, setActiveTab] = useState<AuthTab>('register');
+  const [activeTab, setActiveTab] = useState<AuthTab>('login');
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  // Unified login state
+  const [loginPhone, setLoginPhone] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
 
   // Registration state
   const [studentName, setStudentName] = useState('');
@@ -35,13 +39,7 @@ export function StudentAuthModal({
   const [specialization, setSpecialization] = useState<string>(
     SECONDARY_BRANCHES['الصف الثالث الثانوي'][0]
   );
-
-  // Student login state
-  const [loginStudentPhone, setLoginStudentPhone] = useState('');
-
-  // Supervisor login state
-  const [supervisorPhone, setSupervisorPhone] = useState('');
-  const [supervisorPassword, setSupervisorPassword] = useState('');
+  const [registerPassword, setRegisterPassword] = useState('');
 
   const handleStageChange = (nextStage: EducationalStage) => {
     setStage(nextStage);
@@ -49,6 +47,44 @@ export function StudentAuthModal({
       setSpecialization(BACCALAUREATE_TRACKS[0]);
     } else {
       setSpecialization(SECONDARY_BRANCHES[nextStage][0]);
+    }
+  };
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: loginPhone,
+          password: loginPassword,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMsg(data.error || 'رقم الهاتف أو كلمة المرور غير صحيحة.');
+        return;
+      }
+
+      if (data.role === 'supervisor') {
+        onSupervisorAuthenticated({
+          name: data.name,
+          phone: data.phone,
+          token: data.token,
+        });
+        onClose();
+        return;
+      }
+
+      onStudentAuthenticated(data.student, data.token);
+      onClose();
+    } catch {
+      setErrorMsg('حدث خطأ في الاتصال بالخادم.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -68,6 +104,7 @@ export function StudentAuthModal({
           motherName,
           stage,
           specialization,
+          password: registerPassword,
         }),
       });
       const data = await res.json();
@@ -76,61 +113,6 @@ export function StudentAuthModal({
         return;
       }
       onStudentAuthenticated(data.student, data.token);
-      onClose();
-    } catch {
-      setErrorMsg('حدث خطأ في الاتصال بالخادم.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleStudentLoginSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-    setLoading(true);
-    try {
-      const res = await fetch('/api/auth/student', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ studentPhone: loginStudentPhone }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMsg(data.error || 'تعذر تسجيل الدخول.');
-        return;
-      }
-      onStudentAuthenticated(data.student, data.token);
-      onClose();
-    } catch {
-      setErrorMsg('حدث خطأ في الاتصال بالخادم.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSupervisorLoginSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-    setLoading(true);
-    try {
-      const res = await fetch('/api/auth/supervisor', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone: supervisorPhone,
-          password: supervisorPassword,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMsg(data.error || 'بيانات المشرف غير صحيحة.');
-        return;
-      }
-      onSupervisorAuthenticated({
-        name: data.name,
-        phone: data.phone,
-        token: data.token,
-      });
       onClose();
     } catch {
       setErrorMsg('حدث خطأ في الاتصال بالخادم.');
@@ -154,7 +136,7 @@ export function StudentAuthModal({
           <div className="flex items-center gap-2 text-slate-900">
             <UserCheck className="w-5 h-5 text-blue-700" />
             <h3 id="auth-modal-title" className="text-lg font-bold">
-              بوابة الدخول وإنشاء الحساب
+              حساب الطالب
             </h3>
           </div>
           <button
@@ -167,48 +149,34 @@ export function StudentAuthModal({
           </button>
         </div>
 
-        <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-lg">
+        <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('login');
+              setErrorMsg('');
+            }}
+            className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+              activeTab === 'login'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            تسجيل الدخول
+          </button>
           <button
             type="button"
             onClick={() => {
               setActiveTab('register');
               setErrorMsg('');
             }}
-            className={`px-2 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+            className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
               activeTab === 'register'
                 ? 'bg-white text-slate-900 shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            حساب طالب جديد
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('student-login');
-              setErrorMsg('');
-            }}
-            className={`px-2 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
-              activeTab === 'student-login'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            دخول الطالب
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('supervisor-login');
-              setErrorMsg('');
-            }}
-            className={`px-2 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
-              activeTab === 'supervisor-login'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            دخول المشرف
+            إنشاء حساب طالب جديد
           </button>
         </div>
 
@@ -216,6 +184,65 @@ export function StudentAuthModal({
           <div className="p-3 text-xs font-medium text-red-900 bg-red-50 border border-red-200 rounded-lg">
             {errorMsg}
           </div>
+        )}
+
+        {activeTab === 'login' && (
+          <form onSubmit={handleLoginSubmit} className="space-y-4">
+            <div>
+              <label
+                htmlFor="login-phone"
+                className="block text-xs font-semibold text-slate-700 mb-1.5"
+              >
+                رقم الهاتف
+              </label>
+              <input
+                id="login-phone"
+                type="tel"
+                dir="ltr"
+                required
+                value={loginPhone}
+                onChange={(e) => setLoginPhone(e.target.value)}
+                placeholder="01012345678"
+                className="w-full px-3.5 py-2.5 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="login-password"
+                className="block text-xs font-semibold text-slate-700 mb-1.5"
+              >
+                كلمة المرور
+              </label>
+              <input
+                id="login-password"
+                type="password"
+                dir="ltr"
+                required
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full px-3.5 py-2.5 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+              >
+                إلغاء
+              </button>
+              <button
+                type="submit"
+                disabled={loading}
+                className="px-5 py-2 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors disabled:opacity-60 cursor-pointer"
+              >
+                {loading ? 'جاري الدخول...' : 'تسجيل الدخول'}
+              </button>
+            </div>
+          </form>
         )}
 
         {activeTab === 'register' && (
@@ -298,22 +325,44 @@ export function StudentAuthModal({
               </div>
             </div>
 
-            <div>
-              <label
-                htmlFor="reg-mother-name"
-                className="block text-xs font-semibold text-slate-700 mb-1"
-              >
-                اسم الأم
-              </label>
-              <input
-                id="reg-mother-name"
-                type="text"
-                required
-                value={motherName}
-                onChange={(e) => setMotherName(e.target.value)}
-                placeholder="اسم الأم ثلاثي"
-                className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div>
+                <label
+                  htmlFor="reg-mother-name"
+                  className="block text-xs font-semibold text-slate-700 mb-1"
+                >
+                  اسم الأم
+                </label>
+                <input
+                  id="reg-mother-name"
+                  type="text"
+                  required
+                  value={motherName}
+                  onChange={(e) => setMotherName(e.target.value)}
+                  placeholder="اسم الأم ثلاثي"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="reg-password"
+                  className="block text-xs font-semibold text-slate-700 mb-1"
+                >
+                  كلمة المرور
+                </label>
+                <input
+                  id="reg-password"
+                  type="password"
+                  dir="ltr"
+                  required
+                  minLength={4}
+                  value={registerPassword}
+                  onChange={(e) => setRegisterPassword(e.target.value)}
+                  placeholder="••••••"
+                  className="w-full px-3 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
@@ -375,113 +424,6 @@ export function StudentAuthModal({
               >
                 <UserPlus className="w-4 h-4" />
                 <span>{loading ? 'جاري التسجيل...' : 'إنشاء حساب الطالب'}</span>
-              </button>
-            </div>
-          </form>
-        )}
-
-        {activeTab === 'student-login' && (
-          <form onSubmit={handleStudentLoginSubmit} className="space-y-4">
-            <p className="text-xs text-slate-600 leading-relaxed">
-              أدخل رقم هاتف الطالب المسجل مسبقًا للدخول إلى حسابك واستكمال الحصص.
-            </p>
-            <div>
-              <label
-                htmlFor="login-student-phone"
-                className="block text-xs font-semibold text-slate-700 mb-1.5"
-              >
-                رقم الطالب
-              </label>
-              <input
-                id="login-student-phone"
-                type="tel"
-                dir="ltr"
-                required
-                value={loginStudentPhone}
-                onChange={(e) => setLoginStudentPhone(e.target.value)}
-                placeholder="01012345678"
-                className="w-full px-3.5 py-2.5 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                disabled={loading}
-                className="px-5 py-2 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors disabled:opacity-60 cursor-pointer"
-              >
-                {loading ? 'جاري الدخول...' : 'دخول الطالب'}
-              </button>
-            </div>
-          </form>
-        )}
-
-        {activeTab === 'supervisor-login' && (
-          <form onSubmit={handleSupervisorLoginSubmit} className="space-y-4">
-            <div className="flex items-center gap-2 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3">
-              <ShieldCheck className="w-4 h-4 text-blue-700 shrink-0" />
-              <span>دخول المشرف يفتح لوحة المتابعة الكاملة لبيانات جميع الطلاب.</span>
-            </div>
-
-            <div>
-              <label
-                htmlFor="sup-phone-input"
-                className="block text-xs font-semibold text-slate-700 mb-1.5"
-              >
-                رقم هاتف المشرف
-              </label>
-              <input
-                id="sup-phone-input"
-                type="tel"
-                dir="ltr"
-                required
-                value={supervisorPhone}
-                onChange={(e) => setSupervisorPhone(e.target.value)}
-                placeholder="01022193514"
-                className="w-full px-3.5 py-2.5 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-              />
-            </div>
-
-            <div>
-              <label
-                htmlFor="sup-pass-input"
-                className="block text-xs font-semibold text-slate-700 mb-1.5"
-              >
-                كلمة السر
-              </label>
-              <input
-                id="sup-pass-input"
-                type="password"
-                dir="ltr"
-                required
-                value={supervisorPassword}
-                onChange={(e) => setSupervisorPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full px-3.5 py-2.5 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                disabled={loading}
-                className="px-5 py-2 text-sm font-semibold text-white bg-slate-900 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-60 cursor-pointer"
-              >
-                {loading ? 'جاري التحقق...' : 'دخول لوحة المشرف'}
               </button>
             </div>
           </form>

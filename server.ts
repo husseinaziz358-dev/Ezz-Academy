@@ -16,12 +16,24 @@ const PORT = Number(process.env.PORT) || 3000;
 const TOKEN_SECRET =
   process.env.SESSION_SECRET || 'ezz-academy-session-signing-key-2026';
 
-// Supervisor credentials hashed with scrypt using a fixed salt
+// Supervisor credentials hashed with scrypt
 const SUPERVISOR_PHONE = '01022193514';
 const SUPERVISOR_SALT = 'ezz_sup_salt_2026';
 const SUPERVISOR_PASSWORD_HASH = crypto
   .scryptSync('Husse123##', SUPERVISOR_SALT, 64)
   .toString('hex');
+
+const STUDENT_SALT = 'ezz_student_salt_2026';
+
+function hashStudentPassword(password: string): string {
+  return crypto.scryptSync(password, STUDENT_SALT, 64).toString('hex');
+}
+
+function verifyStudentPassword(password: string, storedHash: string): boolean {
+  const inputBuf = crypto.scryptSync(password, STUDENT_SALT, 64);
+  const storedBuf = Buffer.from(storedHash, 'hex');
+  return inputBuf.length === storedBuf.length && crypto.timingSafeEqual(inputBuf, storedBuf);
+}
 
 export interface StudentRecord {
   id: string;
@@ -33,6 +45,7 @@ export interface StudentRecord {
   stage: string;
   specializationType: 'شعبة' | 'مسار';
   specialization: string;
+  passwordHash?: string;
   unlockedCourseIds: string[];
   completedLessonIds: string[];
   quizAnswers: Record<string, number>;
@@ -41,6 +54,11 @@ export interface StudentRecord {
   attendanceRate: number;
   createdAt: string;
   updatedAt: string;
+}
+
+function sanitizeStudent(student: StudentRecord): Omit<StudentRecord, 'passwordHash'> {
+  const { passwordHash: _ignored, ...safe } = student;
+  return safe;
 }
 
 const SEED_STUDENTS: StudentRecord[] = [
@@ -54,6 +72,7 @@ const SEED_STUDENTS: StudentRecord[] = [
     stage: 'الصف الثالث الثانوي',
     specializationType: 'شعبة',
     specialization: 'علمي رياضة',
+    passwordHash: hashStudentPassword('123456'),
     unlockedCourseIds: ['course-sec3-pure-applied', 'course-sec3-rescue'],
     completedLessonIds: ['les-sec3-1', 'les-sec3-2'],
     quizAnswers: { 'les-sec3-1': 0, 'les-sec3-2': 0 },
@@ -75,6 +94,7 @@ const SEED_STUDENTS: StudentRecord[] = [
     stage: 'البكالوريا',
     specializationType: 'مسار',
     specialization: 'مسار الهندسة وعلوم الحاسب',
+    passwordHash: hashStudentPassword('123456'),
     unlockedCourseIds: ['course-sec3-math-lang', 'course-sec-ai-coding'],
     completedLessonIds: ['les-lang-1', 'les-prog-1'],
     quizAnswers: { 'les-lang-1': 0 },
@@ -94,6 +114,7 @@ const SEED_STUDENTS: StudentRecord[] = [
     stage: 'الصف الثاني الثانوي',
     specializationType: 'شعبة',
     specialization: 'علمي',
+    passwordHash: hashStudentPassword('123456'),
     unlockedCourseIds: ['course-sec2-math'],
     completedLessonIds: ['les-sec2-1'],
     quizAnswers: {},
@@ -180,27 +201,54 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
-  // Supervisor login
-  app.post('/api/auth/supervisor', (req: Request, res: Response) => {
+  // Unified login endpoint: authenticates either supervisor or student seamlessly
+  app.post('/api/auth/login', async (req: Request, res: Response) => {
     const phone = normalizePhone(String(req.body?.phone ?? ''));
     const password = String(req.body?.password ?? '');
 
-    const inputHash = crypto.scryptSync(password, SUPERVISOR_SALT, 64);
-    const targetHash = Buffer.from(SUPERVISOR_PASSWORD_HASH, 'hex');
-    const passwordMatch =
-      inputHash.length === targetHash.length &&
-      crypto.timingSafeEqual(inputHash, targetHash);
-
-    if (phone !== SUPERVISOR_PHONE || !passwordMatch) {
-      res.status(401).json({ error: 'رقم المشرف أو كلمة المرور غير صحيحة.' });
+    if (!phone || !password) {
+      res.status(400).json({ error: 'يرجى إدخال رقم الهاتف وكلمة المرور.' });
       return;
     }
 
-    const token = signToken({ role: 'supervisor', sub: SUPERVISOR_PHONE });
+    if (phone === SUPERVISOR_PHONE) {
+      const inputHash = crypto.scryptSync(password, SUPERVISOR_SALT, 64);
+      const targetHash = Buffer.from(SUPERVISOR_PASSWORD_HASH, 'hex');
+      const passwordMatch =
+        inputHash.length === targetHash.length &&
+        crypto.timingSafeEqual(inputHash, targetHash);
+
+      if (!passwordMatch) {
+        res.status(401).json({ error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' });
+        return;
+      }
+
+      const token = signToken({ role: 'supervisor', sub: SUPERVISOR_PHONE });
+      res.json({
+        role: 'supervisor',
+        phone: SUPERVISOR_PHONE,
+        name: 'المشرف العام — Ezz Academy',
+        token,
+      });
+      return;
+    }
+
+    const students = await ensureDb();
+    const student = students.find((s) => s.studentPhone === phone);
+    if (!student) {
+      res.status(401).json({ error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' });
+      return;
+    }
+
+    if (student.passwordHash && !verifyStudentPassword(password, student.passwordHash)) {
+      res.status(401).json({ error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' });
+      return;
+    }
+
+    const token = signToken({ role: 'student', sub: student.id });
     res.json({
-      role: 'supervisor',
-      phone: SUPERVISOR_PHONE,
-      name: 'المشرف العام — Ezz Academy',
+      role: 'student',
+      student: sanitizeStudent(student),
       token,
     });
   });
@@ -214,6 +262,7 @@ async function startServer() {
     const motherName = String(req.body?.motherName ?? '').trim();
     const stage = String(req.body?.stage ?? '').trim();
     const specialization = String(req.body?.specialization ?? '').trim();
+    const password = String(req.body?.password ?? '');
 
     if (
       !studentName ||
@@ -222,11 +271,19 @@ async function startServer() {
       parentPhone.length < 8 ||
       !motherName ||
       !stage ||
-      !specialization
+      !specialization ||
+      password.length < 4
     ) {
       res.status(400).json({
         error:
-          'يرجى استيفاء جميع البيانات: اسم الطالب، رقم الطالب، اسم ولي الأمر، رقم ولي الأمر، اسم الأم، المرحلة، والشعبة أو المسار.',
+          'يرجى استيفاء جميع البيانات وكلمة مرور لا تقل عن ٤ أحرف.',
+      });
+      return;
+    }
+
+    if (studentPhone === SUPERVISOR_PHONE) {
+      res.status(409).json({
+        error: 'هذا الرقم مسجل بالفعل في النظام.',
       });
       return;
     }
@@ -235,7 +292,7 @@ async function startServer() {
     const duplicate = students.find((s) => s.studentPhone === studentPhone);
     if (duplicate) {
       res.status(409).json({
-        error: 'رقم الطالب مسجل بالفعل. يمكنك تسجيل الدخول برقم الطالب.',
+        error: 'رقم الطالب مسجل بالفعل. يمكنك تسجيل الدخول مباشرة.',
       });
       return;
     }
@@ -252,6 +309,7 @@ async function startServer() {
       stage,
       specializationType,
       specialization,
+      passwordHash: hashStudentPassword(password),
       unlockedCourseIds: ['course-sec3-pure-applied', 'course-sec1-math'],
       completedLessonIds: [],
       quizAnswers: {},
@@ -266,29 +324,10 @@ async function startServer() {
     await saveDb(students);
 
     const token = signToken({ role: 'student', sub: newStudent.id });
-    res.status(201).json({ student: newStudent, token });
+    res.status(201).json({ student: sanitizeStudent(newStudent), token });
   });
 
-  // Student login by phone
-  app.post('/api/auth/student', async (req: Request, res: Response) => {
-    const studentPhone = normalizePhone(String(req.body?.studentPhone ?? ''));
-    if (!studentPhone) {
-      res.status(400).json({ error: 'يرجى إدخال رقم الطالب.' });
-      return;
-    }
-    const students = await ensureDb();
-    const student = students.find((s) => s.studentPhone === studentPhone);
-    if (!student) {
-      res.status(404).json({
-        error: 'لم يتم العثور على حساب بهذا الرقم. أنشئ حساب طالب جديد أولًا.',
-      });
-      return;
-    }
-    const token = signToken({ role: 'student', sub: student.id });
-    res.json({ student, token });
-  });
-
-  // Sync student learning progress (unlocked courses, completed lessons, quizzes, notes)
+  // Sync student learning progress
   app.patch('/api/students/:id/progress', async (req: Request, res: Response) => {
     const authHeader = req.headers.authorization || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -332,13 +371,13 @@ async function startServer() {
 
     students[idx] = updated;
     await saveDb(students);
-    res.json({ student: updated });
+    res.json({ student: sanitizeStudent(updated) });
   });
 
   // Supervisor: list all students
   app.get('/api/supervisor/students', requireSupervisor, async (_req: Request, res: Response) => {
     const students = await ensureDb();
-    res.json({ students });
+    res.json({ students: students.map(sanitizeStudent) });
   });
 
   // Supervisor: update student follow-up notes, attendance, or unlocked courses
@@ -372,7 +411,7 @@ async function startServer() {
 
       students[idx] = updated;
       await saveDb(students);
-      res.json({ student: updated });
+      res.json({ student: sanitizeStudent(updated) });
     }
   );
 
@@ -391,7 +430,7 @@ async function startServer() {
       res.status(404).json({ error: 'لم يتم العثور على طالب مرتبط بهذا الرقم.' });
       return;
     }
-    res.json({ student: found });
+    res.json({ student: sanitizeStudent(found) });
   });
 
   if (process.env.NODE_ENV === 'production') {
