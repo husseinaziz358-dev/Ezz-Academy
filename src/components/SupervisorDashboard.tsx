@@ -14,6 +14,10 @@ import {
   apiFetchSupervisorStudents,
   apiUpdateSupervisorStudent,
 } from '../utils/apiClient';
+import {
+  fetchAllFirebaseStudents,
+  updateFirebaseStudentBySupervisor,
+} from '../services/firebaseStudents';
 
 interface SupervisorDashboardProps {
   supervisorName: string;
@@ -46,12 +50,19 @@ export function SupervisorDashboard({
     setLoading(true);
     setErrorMsg('');
     try {
+      if (token === 'firebase-google-session') {
+        const fbStudents = await fetchAllFirebaseStudents();
+        setStudents(fbStudents);
+        return;
+      }
       const result = await apiFetchSupervisorStudents(token);
       if (!result.ok) {
         setErrorMsg(result.error);
         return;
       }
       setStudents(result.students);
+    } catch {
+      setErrorMsg('تعذر تحميل بيانات الطلاب من قاعدة البيانات.');
     } finally {
       setLoading(false);
     }
@@ -98,6 +109,20 @@ export function SupervisorDashboard({
     setSaving(true);
     setSavedNotice(false);
     try {
+      if (token === 'firebase-google-session') {
+        const updated = await updateFirebaseStudentBySupervisor(selectedStudent.id, {
+          supervisorNotes: editNotes,
+          attendanceRate: editAttendance,
+          unlockedCourseIds: editCourses,
+        });
+        setStudents((prev) =>
+          prev.map((s) => (s.id === updated.id ? updated : s))
+        );
+        setSelectedStudent(updated);
+        setSavedNotice(true);
+        return;
+      }
+
       const result = await apiUpdateSupervisorStudent(selectedStudent.id, token, {
         supervisorNotes: editNotes,
         attendanceRate: editAttendance,

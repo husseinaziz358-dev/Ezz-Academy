@@ -35,6 +35,12 @@ import { ParentPortalView } from './components/ParentPortalView';
 import { BooksStoreSection } from './components/BooksStoreSection';
 import { SupervisorDashboard } from './components/SupervisorDashboard';
 import { apiSyncStudentProgress } from './utils/apiClient';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from './firebase';
+import {
+  signOutFirebase,
+  syncFirebaseStudentProgress,
+} from './services/firebaseStudents';
 
 type AppView =
   | 'home'
@@ -137,16 +143,28 @@ export default function App() {
     }
   }, [session]);
 
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, () => {
+      // Keep Firebase Auth session synchronized with client state
+    });
+    return () => unsubscribe();
+  }, []);
+
   const syncStudentProgressToServer = async (nextSession: SessionState) => {
     if (nextSession.role !== 'student' || !nextSession.studentId || !nextSession.token) {
       return;
     }
-    await apiSyncStudentProgress(nextSession.studentId, nextSession.token, {
+    const payload = {
       unlockedCourseIds: nextSession.unlockedCourseIds,
       completedLessonIds: nextSession.completedLessonIds,
       notesByLesson: nextSession.notesByLesson,
       quizAnswers: nextSession.quizAnswers,
-    });
+    };
+    if (nextSession.token === 'firebase-google-session') {
+      await syncFirebaseStudentProgress(nextSession.studentId, payload);
+      return;
+    }
+    await apiSyncStudentProgress(nextSession.studentId, nextSession.token, payload);
   };
 
   const activeCourse: Course =
@@ -279,6 +297,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    void signOutFirebase();
     setSession(DEFAULT_SESSION);
     navigateTo('home');
   };

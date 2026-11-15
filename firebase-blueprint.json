@@ -1,0 +1,200 @@
+{
+  "entities": {
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Verified supervisor role document granting administrative access.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the supervisor.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified email address of the supervisor.",
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "StudentProfile": {
+      "title": "StudentProfile",
+      "description": "Academic student record, educational stage, specialization, course access, and learning progress.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentName": {
+          "type": "string",
+          "description": "Full name of the student.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "stage": {
+          "type": "string",
+          "description": "Educational stage in Egyptian secondary or Baccalaureate system.",
+          "enum": [
+            "الصف الأول الثانوي",
+            "الصف الثاني الثانوي",
+            "الصف الثالث الثانوي",
+            "البكالوريا"
+          ]
+        },
+        "specializationType": {
+          "type": "string",
+          "description": "Branch or track label.",
+          "enum": ["شعبة", "مسار"]
+        },
+        "specialization": {
+          "type": "string",
+          "description": "Selected secondary branch or Baccalaureate track.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "unlockedCourseIds": {
+          "type": "array",
+          "description": "List of unlocked course identifiers."
+        },
+        "completedLessonIds": {
+          "type": "array",
+          "description": "List of completed lesson identifiers."
+        },
+        "quizAnswers": {
+          "type": "object",
+          "description": "Map of lesson IDs to selected quiz option indices."
+        },
+        "notesByLesson": {
+          "type": "object",
+          "description": "Map of lesson IDs to student study notes."
+        },
+        "supervisorNotes": {
+          "type": "string",
+          "description": "Follow-up notes entered by the supervisor.",
+          "maxLength": 1000
+        },
+        "attendanceRate": {
+          "type": "integer",
+          "description": "Attendance percentage from 0 to 100."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-update timestamp."
+        }
+      },
+      "required": [
+        "uid",
+        "studentName",
+        "stage",
+        "specializationType",
+        "specialization",
+        "unlockedCourseIds",
+        "completedLessonIds",
+        "quizAnswers",
+        "notesByLesson",
+        "supervisorNotes",
+        "attendanceRate",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StudentPrivateContact": {
+      "title": "StudentPrivateContact",
+      "description": "Isolated PII contact information for student, father/guardian, and mother.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentPhone": {
+          "type": "string",
+          "description": "Student mobile number.",
+          "minLength": 8,
+          "maxLength": 20,
+          "pattern": "^[0-9+]+$"
+        },
+        "parentName": {
+          "type": "string",
+          "description": "Parent or guardian full name.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "parentPhone": {
+          "type": "string",
+          "description": "Parent or guardian mobile number.",
+          "minLength": 8,
+          "maxLength": 20,
+          "pattern": "^[0-9+]+$"
+        },
+        "motherName": {
+          "type": "string",
+          "description": "Mother full name.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Optional verified account email.",
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-update timestamp."
+        }
+      },
+      "required": [
+        "uid",
+        "studentPhone",
+        "parentName",
+        "parentPhone",
+        "motherName",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Supervisor role documents."
+    },
+    "/students/{studentUid}": {
+      "schema": { "$ref": "#/entities/StudentProfile" },
+      "description": "Academic student profiles keyed by Firebase Auth UID."
+    },
+    "/students/{studentUid}/private/{docId}": {
+      "schema": { "$ref": "#/entities/StudentPrivateContact" },
+      "description": "Isolated PII contact subcollection ('contact' doc) owned by the student and readable by supervisor."
+    }
+  }
+}

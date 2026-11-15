@@ -5,24 +5,117 @@ const FALLBACK_DB_KEY = 'ezz_academy_students_fallback_v1';
 // SHA-256 hex of 'Husse123##' so no plaintext password is stored in client code
 const SUPERVISOR_PHONE = '01022193514';
 const SUPERVISOR_SHA256 =
-  '254d0c7e5eb15e0a817e7634009d49d90425c3943c3230f22f52cfad1979a725';
+  '43a8f3a4982f9dba8097ed482a8c35882c71469290a5eba22ada384257f3e72b';
 
 export function normalizeDigits(input: string): string {
   const arabicDigits = '٠١٢٣٤٥٦٧٨٩';
   const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
-  return input
+  let normalized = input
     .replace(/[٠-٩]/g, (d) => String(arabicDigits.indexOf(d)))
     .replace(/[۰-۹]/g, (d) => String(persianDigits.indexOf(d)))
-    .replace(/\s+/g, '')
+    .replace(/[\s\-()]/g, '')
     .trim();
+  if (normalized.startsWith('+20')) {
+    normalized = '0' + normalized.slice(3);
+  } else if (normalized.startsWith('0020')) {
+    normalized = '0' + normalized.slice(4);
+  } else if (normalized.startsWith('201') && normalized.length === 12) {
+    normalized = '0' + normalized.slice(2);
+  }
+  return normalized;
+}
+
+function pureSha256Hex(ascii: string): string {
+  const rightRotate = (value: number, amount: number) =>
+    (value >>> amount) | (value << (32 - amount));
+  const mathPow = Math.pow;
+  const maxWord = mathPow(2, 32);
+  let result = '';
+  const words: number[] = [];
+  const utf8 = unescape(encodeURIComponent(ascii));
+  const asciiBitLength = utf8.length * 8;
+  const hash: number[] = [];
+  const k: number[] = [];
+  let primeCounter = 0;
+
+  const isPrime = (n: number) => {
+    for (let factor = 2, root = Math.sqrt(n); factor <= root; factor++) {
+      if (n % factor === 0) return false;
+    }
+    return true;
+  };
+  const frac = (n: number) => ((n - (n | 0)) * maxWord) | 0;
+
+  for (let candidate = 2; primeCounter < 64; candidate++) {
+    if (isPrime(candidate)) {
+      if (primeCounter < 8) hash[primeCounter] = frac(mathPow(candidate, 1 / 2));
+      k[primeCounter] = frac(mathPow(candidate, 1 / 3));
+      primeCounter++;
+    }
+  }
+
+  let msg = utf8 + '\x80';
+  while ((msg.length % 64) - 56) msg += '\x00';
+  for (let i = 0; i < msg.length; i++) {
+    const j = msg.charCodeAt(i);
+    words[i >> 2] |= j << (((3 - i) % 4) * 8);
+  }
+  words[words.length] = (asciiBitLength / maxWord) | 0;
+  words[words.length] = asciiBitLength;
+
+  for (let j = 0; j < words.length; ) {
+    const w = words.slice(j, (j += 16));
+    const oldHash = hash.slice(0);
+    for (let i = 0; i < 64; i++) {
+      const w15 = w[i - 15];
+      const w2 = w[i - 2];
+      const a = hash[0];
+      const e = hash[4];
+      const temp1 =
+        hash[7] +
+        (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25)) +
+        ((e & hash[5]) ^ (~e & hash[6])) +
+        k[i] +
+        (w[i] =
+          i < 16
+            ? w[i]
+            : (w[i - 16] +
+                (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3)) +
+                w[i - 7] +
+                (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10))) |
+              0);
+      const temp2 =
+        (rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22)) +
+        ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));
+      hash.unshift((temp1 + temp2) | 0);
+      hash.pop();
+      hash[4] = (hash[4] + temp1) | 0;
+    }
+    for (let i = 0; i < 8; i++) hash[i] = (hash[i] + oldHash[i]) | 0;
+  }
+
+  for (let i = 0; i < 8; i++) {
+    for (let j = 3; j + 1; j--) {
+      const b = (hash[i] >> (j * 8)) & 255;
+      result += (b < 16 ? '0' : '') + b.toString(16);
+    }
+  }
+  return result;
 }
 
 async function sha256Hex(text: string): Promise<string> {
-  const data = new TextEncoder().encode(text);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+  try {
+    if (typeof crypto !== 'undefined' && crypto.subtle) {
+      const data = new TextEncoder().encode(text);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(hashBuffer))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+  } catch {
+    // Fallback to pure JS SHA-256
+  }
+  return pureSha256Hex(text);
 }
 
 const SEED_FALLBACK_STUDENTS: StudentRecord[] = [
@@ -174,7 +267,8 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
   // Fallback for static preview without backend server
   if (phone === SUPERVISOR_PHONE) {
     const hash = await sha256Hex(password);
-    if (hash !== SUPERVISOR_SHA256) {
+    const trimmedHash = await sha256Hex(password.trim());
+    if (hash !== SUPERVISOR_SHA256 && trimmedHash !== SUPERVISOR_SHA256) {
       return { ok: false, error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' };
     }
     return {

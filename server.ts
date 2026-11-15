@@ -185,11 +185,19 @@ function verifyToken(
 function normalizePhone(phone: string): string {
   const arabicDigits = '٠١٢٣٤٥٦٧٨٩';
   const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
-  return phone
+  let normalized = phone
     .replace(/[٠-٩]/g, (d) => String(arabicDigits.indexOf(d)))
     .replace(/[۰-۹]/g, (d) => String(persianDigits.indexOf(d)))
-    .replace(/\s+/g, '')
+    .replace(/[\s\-()]/g, '')
     .trim();
+  if (normalized.startsWith('+20')) {
+    normalized = '0' + normalized.slice(3);
+  } else if (normalized.startsWith('0020')) {
+    normalized = '0' + normalized.slice(4);
+  } else if (normalized.startsWith('201') && normalized.length === 12) {
+    normalized = '0' + normalized.slice(2);
+  }
+  return normalized;
 }
 
 function requireSupervisor(req: Request, res: Response, next: NextFunction) {
