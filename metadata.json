@@ -1,0 +1,6 @@
+{
+  "name": "Ezz Academy",
+  "description": "منصة Ezz Academy التعليمية — شرح ومراجعات الرياضيات للثانوية العامة (عربي ولغات)، كورسات البرمجة، الكتب والملازم، وبوابة متابعة ولي الأمر.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
