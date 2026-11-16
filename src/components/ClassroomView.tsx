@@ -26,7 +26,6 @@ import {
   LessonVideo,
   QuizQuestion,
 } from '../data/academyData';
-import { InteractiveConceptLab } from './InteractiveConceptLab';
 import { CertificateModal } from './CertificateModal';
 import { CustomYouTubePlayer } from './CustomYouTubePlayer';
 import { formatAttendanceDateArabic, getTodayDateKey } from '../utils/attendance';
@@ -59,8 +58,6 @@ interface ClassroomViewProps {
   onPurchaseCourse?: () => Promise<void> | void;
   purchaseFeedback?: { type: 'ok' | 'error'; text: string } | null;
 }
-
-type StageMode = 'lecture' | 'lab';
 
 function resolveVideoEmbed(
   url: string,
@@ -242,7 +239,6 @@ export function ClassroomView({
   const allLessons = useMemo(() => getCourseAllLessons(course), [course]);
   const [activeLessonId, setActiveLessonId] = useState<string>(allLessons[0]?.id ?? '');
   const [activeVideoIndex, setActiveVideoIndex] = useState<number>(0);
-  const [stageMode, setStageMode] = useState<StageMode>('lecture');
   const [showNotesPanel, setShowNotesPanel] = useState<boolean>(false);
   const [measuredVideoSeconds, setMeasuredVideoSeconds] = useState<Record<string, number>>({});
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -438,30 +434,9 @@ export function ClassroomView({
         {/* Main lesson content column */}
         <div className="lg:col-span-8 space-y-6 min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="inline-flex items-center gap-1 p-1 bg-slate-200/70 dark:bg-slate-900 border border-transparent dark:border-slate-800 rounded-lg max-w-full overflow-x-auto">
-              <button
-                type="button"
-                onClick={() => setStageMode('lecture')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                  stageMode === 'lecture'
-                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                فيديوهات ومحتوى الحصة
-              </button>
-              <button
-                type="button"
-                onClick={() => setStageMode('lab')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                  stageMode === 'lab'
-                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                المختبر التفاعلي
-              </button>
-            </div>
+            <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
+              فيديوهات ومحتوى الحصة
+            </h2>
 
             <div className="flex flex-wrap items-center gap-2">
               {canAccessActiveLesson && activeLessonAttendanceDate && (
@@ -538,8 +513,6 @@ export function ClassroomView({
                 </div>
               )}
             </div>
-          ) : stageMode === 'lab' ? (
-            <InteractiveConceptLab kind={activeLesson.simulationKind} />
           ) : (
             <div className="space-y-6">
               {/* 1. Lesson Video(s) Player */}

@@ -30,6 +30,8 @@ interface YTPlayerInstance {
   getPlaybackQuality: () => string;
   setPlaybackQuality: (quality: string) => void;
   getPlayerState: () => number;
+  unloadModule?: (moduleName: string) => void;
+  setOption?: (module: string, option: string, value: unknown) => void;
   destroy: () => void;
 }
 
@@ -46,6 +48,7 @@ interface YTNamespace {
         onReady?: (event: { target: YTPlayerInstance }) => void;
         onStateChange?: (event: { data: number; target: YTPlayerInstance }) => void;
         onPlaybackQualityChange?: (event: { data: string; target: YTPlayerInstance }) => void;
+        onApiChange?: (event: { target: YTPlayerInstance }) => void;
         onError?: (event: { data: number }) => void;
       };
     }
@@ -157,6 +160,17 @@ function formatClock(totalSeconds: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function stripYouTubeCaptions(p: YTPlayerInstance) {
+  try {
+    p.unloadModule?.('captions');
+    p.unloadModule?.('cc');
+    p.setOption?.('captions', 'track', {});
+    p.setOption?.('cc', 'track', {});
+  } catch {
+    // Ignore when captions module is not loaded
+  }
+}
+
 export interface CustomYouTubePlayerProps {
   videoId: string;
   title: string;
@@ -185,7 +199,6 @@ export function CustomYouTubePlayer({
   const playerMountRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayerInstance | null>(null);
   const hideControlsTimerRef = useRef<number | null>(null);
-  const introMaskTimerRef = useRef<number | null>(null);
   const isSeekingRef = useRef<boolean>(false);
 
   const onDurationRef = useRef(onDurationDetected);
@@ -200,7 +213,6 @@ export function CustomYouTubePlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [isEnded, setIsEnded] = useState(false);
-  const [introMaskActive, setIntroMaskActive] = useState(false);
   const [embedError, setEmbedError] = useState<string>('');
 
   const [currentTime, setCurrentTime] = useState(0);
@@ -220,16 +232,6 @@ export function CustomYouTubePlayer({
 
   const selectedQualityRef = useRef(selectedQuality);
   selectedQualityRef.current = selectedQuality;
-
-  const triggerIntroMask = useCallback(() => {
-    setIntroMaskActive(true);
-    if (introMaskTimerRef.current) {
-      window.clearTimeout(introMaskTimerRef.current);
-    }
-    introMaskTimerRef.current = window.setTimeout(() => {
-      setIntroMaskActive(false);
-    }, 3400);
-  }, []);
 
   const revealControlsTemporarily = useCallback(() => {
     setControlsVisible(true);
@@ -298,6 +300,7 @@ export function CustomYouTubePlayer({
             modestbranding: 1,
             rel: 0,
             iv_load_policy: 3,
+            cc_load_policy: 0,
             disablekb: 1,
             fs: 0,
             playsinline: 1,
@@ -311,6 +314,7 @@ export function CustomYouTubePlayer({
               const p = e.target;
               playerRef.current = p;
               setIsReady(true);
+              stripYouTubeCaptions(p);
 
               const dur = p.getDuration();
               if (Number.isFinite(dur) && dur > 0) {
@@ -327,17 +331,22 @@ export function CustomYouTubePlayer({
                 iframeEl.style.pointerEvents = 'none';
               }
             },
+            onApiChange: (e) => {
+              if (!cancelled) {
+                stripYouTubeCaptions(e.target);
+              }
+            },
             onStateChange: (e) => {
               if (cancelled) return;
               const p = e.target;
               const st = e.data;
+              stripYouTubeCaptions(p);
               // 1 = PLAYING, 2 = PAUSED, 0 = ENDED, 3 = BUFFERING
               if (st === 1) {
                 setHasStarted(true);
                 setIsPlaying(true);
                 setIsBuffering(false);
                 setIsEnded(false);
-                triggerIntroMask();
 
                 const dur = p.getDuration();
                 if (Number.isFinite(dur) && dur > 0) {
@@ -404,7 +413,6 @@ export function CustomYouTubePlayer({
     return () => {
       cancelled = true;
       if (hideControlsTimerRef.current) window.clearTimeout(hideControlsTimerRef.current);
-      if (introMaskTimerRef.current) window.clearTimeout(introMaskTimerRef.current);
       if (playerRef.current) {
         try {
           playerRef.current.destroy();
@@ -414,7 +422,7 @@ export function CustomYouTubePlayer({
         playerRef.current = null;
       }
     };
-  }, [videoId, startSeconds, reactId, triggerIntroMask]);
+  }, [videoId, startSeconds, reactId]);
 
   // Poll playback progress while playing
   useEffect(() => {
@@ -561,111 +569,107 @@ export function CustomYouTubePlayer({
         if (isPlaying && !showSettings) setControlsVisible(false);
       }}
       onTouchStart={revealControlsTemporarily}
-      className="relative w-full aspect-video bg-black select-none overflow-hidden group"
+      className={`relative w-full bg-black select-none overflow-hidden group flex items-center justify-center ${
+        isFullscreen ? 'w-screen h-screen' : 'aspect-video'
+      }`}
     >
-      {/* 1. YouTube IFrame Mount (pointer-events disabled so no direct clicks/links can fire) */}
+      {/* Centered 16:9 Stage (clips out YouTube's top channel/title bar & bottom logo/shelf even in fullscreen) */}
       <div
-        ref={playerMountRef}
-        className="absolute inset-0 w-full h-full pointer-events-none"
-      />
-
-      {/* 2. Top & Bottom Protective Scrims (hides YouTube's brief title flash & pause shelf) */}
-      {hasStarted && (introMaskActive || !isPlaying) && !embedError && (
+        className={`relative aspect-video overflow-hidden bg-black ${
+          isFullscreen ? 'w-[min(100vw,calc(100vh*16/9))]' : 'w-full'
+        }`}
+      >
+        {/* 1. Vertically padded IFrame Mount so YouTube chrome renders outside the clipped 16:9 stage */}
         <div
-          aria-hidden="true"
-          className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black via-black/90 to-transparent z-10 pointer-events-none"
+          ref={playerMountRef}
+          style={{ top: '-76px', height: 'calc(100% + 152px)' }}
+          className="absolute inset-x-0 w-full pointer-events-none"
         />
-      )}
-      {hasStarted && !isPlaying && !isEnded && !embedError && (
-        <div
-          aria-hidden="true"
-          className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black via-black/90 to-transparent z-10 pointer-events-none"
-        />
-      )}
 
-      {/* 3. Pre-Play & End-Screen Poster Curtain (completely hides YouTube pre-play UI, Share, Logo & related videos) */}
-      {(!hasStarted || isEnded) && !embedError && (
-        <div className="absolute inset-0 z-10 bg-slate-950">
-          <img
-            src={`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`}
-            alt={title}
-            draggable={false}
-            className="w-full h-full object-cover opacity-55"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/35 to-slate-950/55" />
-        </div>
-      )}
+        {/* 2. Pre-Play & End-Screen Poster Curtain (completely hides YouTube pre-play UI, Share, Logo & related videos) */}
+        {(!hasStarted || isEnded) && !embedError && (
+          <div className="absolute inset-0 z-10 bg-slate-950">
+            <img
+              src={`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`}
+              alt={title}
+              draggable={false}
+              className="w-full h-full object-cover opacity-55"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/35 to-slate-950/55" />
+          </div>
+        )}
 
-      {/* 4. Full Transparent Protection Overlay (blocks right-click & ALL outbound YouTube links/UI clicks) */}
-      {!embedError && (
-        <div
-          role="button"
-          tabIndex={0}
-          aria-label={isPlaying ? 'إيقاف الفيديو مؤقتًا' : 'تشغيل الفيديو'}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          onClick={() => {
-            if (showSettings) {
-              setShowSettings(false);
-              setSettingsTab('main');
-              return;
-            }
-            togglePlay();
-          }}
-          onDoubleClick={() => void handleToggleFullscreen()}
-          onKeyDown={(e) => {
-            if (e.key === ' ' || e.key === 'Enter') {
+        {/* 3. Full Transparent Protection Overlay (blocks right-click & ALL outbound YouTube links/UI clicks) */}
+        {!embedError && (
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label={isPlaying ? 'إيقاف الفيديو مؤقتًا' : 'تشغيل الفيديو'}
+            onContextMenu={(e) => {
               e.preventDefault();
+              e.stopPropagation();
+            }}
+            onClick={() => {
+              if (showSettings) {
+                setShowSettings(false);
+                setSettingsTab('main');
+                return;
+              }
               togglePlay();
-            }
-          }}
-          className="absolute inset-0 z-20 cursor-pointer bg-transparent"
-        />
-      )}
+            }}
+            onDoubleClick={() => void handleToggleFullscreen()}
+            onKeyDown={(e) => {
+              if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                togglePlay();
+              }
+            }}
+            className="absolute inset-0 z-20 cursor-pointer bg-transparent"
+          />
+        )}
 
-      {/* 5. Center Play / Replay / Buffering Visual Indicator */}
-      {!embedError && (!hasStarted || isEnded || isBuffering) && (
-        <div className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center">
-          {isBuffering ? (
-            <div className="w-14 h-14 rounded-full bg-slate-950/80 border border-white/20 flex items-center justify-center">
-              <div className="w-7 h-7 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
-            </div>
-          ) : (
-            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-blue-700/95 text-white shadow-xl border-2 border-white/25 flex items-center justify-center transition-transform group-hover:scale-105">
-              {isEnded ? (
-                <RotateCcw className="w-7 h-7 sm:w-8 sm:h-8" />
-              ) : (
-                <Play className="w-7 h-7 sm:w-9 sm:h-9 translate-x-0.5 fill-current" />
-              )}
-            </div>
-          )}
-        </div>
-      )}
+        {/* 4. Center Play / Replay / Buffering Visual Indicator */}
+        {!embedError && (!hasStarted || isEnded || isBuffering) && (
+          <div className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center">
+            {isBuffering ? (
+              <div className="w-14 h-14 rounded-full bg-slate-950/80 border border-white/20 flex items-center justify-center">
+                <div className="w-7 h-7 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
+              </div>
+            ) : (
+              <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-blue-700/95 text-white shadow-xl border-2 border-white/25 flex items-center justify-center transition-transform group-hover:scale-105">
+                {isEnded ? (
+                  <RotateCcw className="w-7 h-7 sm:w-8 sm:h-8" />
+                ) : (
+                  <Play className="w-7 h-7 sm:w-9 sm:h-9 translate-x-0.5 fill-current" />
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
-      {/* 6. Moving Light Watermark (Student Name + Registered Email/Identifier) */}
-      {!embedError && (
-        <div
-          aria-hidden="true"
-          style={{ top: watermarkCoords.top, left: watermarkCoords.left }}
-          className="absolute z-20 pointer-events-none select-none transition-all duration-[2600ms] ease-in-out max-w-[42%]"
-        >
-          <div className="px-2.5 py-1 rounded bg-black/15 backdrop-blur-[1px] border border-white/10 text-white/45 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
-            <div className="text-[11px] sm:text-xs font-bold leading-tight truncate">
-              {watermarkLabelPrimary}
-            </div>
-            <div
-              dir="ltr"
-              className="text-[10px] sm:text-[11px] font-mono leading-tight truncate opacity-90"
-            >
-              {watermarkLabelSecondary}
+        {/* 5. Moving Light Watermark (Student Name + Registered Email/Identifier) */}
+        {!embedError && (
+          <div
+            aria-hidden="true"
+            style={{ top: watermarkCoords.top, left: watermarkCoords.left }}
+            className="absolute z-20 pointer-events-none select-none transition-all duration-[2600ms] ease-in-out max-w-[42%]"
+          >
+            <div className="px-2.5 py-1 rounded bg-black/15 backdrop-blur-[1px] border border-white/10 text-white/45 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
+              <div className="text-[11px] sm:text-xs font-bold leading-tight truncate">
+                {watermarkLabelPrimary}
+              </div>
+              <div
+                dir="ltr"
+                className="text-[10px] sm:text-[11px] font-mono leading-tight truncate opacity-90"
+              >
+                {watermarkLabelSecondary}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* 7. Embed Error Fallback (never leaks outbound link) */}
+      {/* 6. Embed Error Fallback (never leaks outbound link) */}
       {embedError && (
         <div className="absolute inset-0 z-30 bg-slate-950 text-white flex flex-col items-center justify-center p-6 text-center space-y-3">
           <AlertTriangle className="w-9 h-9 text-amber-400" />
