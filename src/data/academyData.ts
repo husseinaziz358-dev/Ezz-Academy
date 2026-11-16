@@ -25,12 +25,29 @@ export interface QuizQuestion {
   explanation: string;
 }
 
+export interface LessonVideo {
+  id: string;
+  title: string;
+  url: string;
+  sourceType: 'link' | 'upload';
+}
+
+export interface LessonAttachment {
+  id: string;
+  title: string;
+  url: string;
+  fileName?: string;
+}
+
 export interface Lesson {
   id: string;
   title: string;
   durationMinutes: number;
   summary: string;
   keyTakeaways: string[];
+  videos?: LessonVideo[];
+  attachments?: LessonAttachment[];
+  examQuestions?: QuizQuestion[];
   codeSnippet?: {
     language: string;
     label: string;

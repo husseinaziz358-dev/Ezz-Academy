@@ -11,6 +11,7 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.join(__dirname, 'data');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const DB_FILE = path.join(DATA_DIR, 'students-db.json');
 const CATALOG_FILE = path.join(DATA_DIR, 'academy-db.json');
 
@@ -155,6 +156,40 @@ interface DynamicTeacherRecord {
   createdAt: string;
 }
 
+interface LessonVideoRecord {
+  id: string;
+  title: string;
+  url: string;
+  sourceType: 'link' | 'upload';
+}
+
+interface LessonAttachmentRecord {
+  id: string;
+  title: string;
+  url: string;
+  fileName?: string;
+}
+
+interface QuizQuestionRecord {
+  question: string;
+  options: string[];
+  correctIndex: number;
+  explanation: string;
+}
+
+interface CustomCourseLessonRecord {
+  id: string;
+  title: string;
+  durationMinutes: number;
+  summary: string;
+  keyTakeaways: string[];
+  videos?: LessonVideoRecord[];
+  attachments?: LessonAttachmentRecord[];
+  examQuestions?: QuizQuestionRecord[];
+  simulationKind: 'math-calculus' | 'neural-convergence' | 'web-architecture';
+  quiz: QuizQuestionRecord;
+}
+
 interface CustomCourseRecord {
   id: string;
   title: string;
@@ -170,20 +205,7 @@ interface CustomCourseRecord {
   modules: {
     id: string;
     title: string;
-    lessons: {
-      id: string;
-      title: string;
-      durationMinutes: number;
-      summary: string;
-      keyTakeaways: string[];
-      simulationKind: 'math-calculus' | 'neural-convergence' | 'web-architecture';
-      quiz: {
-        question: string;
-        options: string[];
-        correctIndex: number;
-        explanation: string;
-      };
-    }[];
+    lessons: CustomCourseLessonRecord[];
   }[];
 }
 
@@ -282,8 +304,10 @@ function requireSupervisor(req: Request, res: Response, next: NextFunction) {
 async function startServer() {
   await ensureDb();
   await ensureCatalogDb();
+  await fs.mkdir(UPLOADS_DIR, { recursive: true });
   const app = express();
-  app.use(express.json({ limit: '5mb' }));
+  app.use('/uploads', express.static(UPLOADS_DIR));
+  app.use(express.json({ limit: '12mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ ok: true });
@@ -610,6 +634,41 @@ async function startServer() {
     }
   );
 
+  // Admin: upload a video or document file for lessons
+  app.post(
+    '/api/supervisor/upload',
+    requireSupervisor,
+    express.raw({ type: '*/*', limit: '80mb' }),
+    async (req: Request, res: Response) => {
+      try {
+        const bodyBuf = req.body;
+        if (!Buffer.isBuffer(bodyBuf) || bodyBuf.length === 0) {
+          res.status(400).json({ error: 'لم يتم استلام أي ملف للرفع.' });
+          return;
+        }
+        const headerName = String(req.headers['x-file-name'] || 'file.bin');
+        let decodedName = 'file.bin';
+        try {
+          decodedName = decodeURIComponent(headerName);
+        } catch {
+          decodedName = headerName;
+        }
+        const extMatch = path.extname(decodedName).match(/^\.[a-zA-Z0-9]{1,8}$/);
+        const safeExt = extMatch ? extMatch[0].toLowerCase() : '.bin';
+        const uniqueName = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}${safeExt}`;
+        await fs.mkdir(UPLOADS_DIR, { recursive: true });
+        await fs.writeFile(path.join(UPLOADS_DIR, uniqueName), bodyBuf);
+        res.status(201).json({
+          url: `/uploads/${uniqueName}`,
+          fileName: decodedName,
+        });
+      } catch (err) {
+        console.error('Upload error:', err);
+        res.status(500).json({ error: 'تعذر رفع الملف على الخادم.' });
+      }
+    }
+  );
+
   // Admin: add a course linked to a teacher and a single educational stage/year
   app.post('/api/supervisor/courses', requireSupervisor, async (req: Request, res: Response) => {
     try {
@@ -624,6 +683,7 @@ async function startServer() {
       const lessonTitles: string[] = Array.isArray(req.body?.lessonTitles)
         ? req.body.lessonTitles.map((l: unknown) => String(l).trim()).filter(Boolean)
         : [];
+      const incomingModules = Array.isArray(req.body?.modules) ? req.body.modules : null;
 
       if (!title || !grade || !instructorId) {
         res.status(400).json({ error: 'يرجى إدخال اسم الكورس واختيار المرحلة الدراسية والمدرس.' });
@@ -636,6 +696,50 @@ async function startServer() {
           ? lessonTitles
           : ['الحصة الأولى: شرح الأساسيات والتطبيقات'];
 
+      const defaultQuiz = (lesTitle: string): QuizQuestionRecord => ({
+        question: `اختبار سريع على: ${lesTitle}`,
+        options: [
+          'مراجعة المفهوم الأساسي وتطبيق القانون المباشر',
+          'إهمال شروط التعريف في المسألة',
+          'الاعتماد على خطوات غير مكتملة',
+          'لا شيء مما سبق',
+        ],
+        correctIndex: 0,
+        explanation: 'الخطوة الصحيحة دائمًا تبدأ بتحقيق شروط القانون الأساسي ثم التعويض الدقيق.',
+      });
+
+      const resolvedModules =
+        incomingModules && incomingModules.length > 0
+          ? incomingModules
+          : [
+              {
+                id: `mod-${Date.now()}`,
+                title: 'الحصص الدراسية',
+                lessons: lessonsList.map((lesTitle, idx) => ({
+                  id: `les-${Date.now()}-${idx + 1}`,
+                  title: lesTitle,
+                  durationMinutes: 45,
+                  summary: `شرح تفصيلي لدرس «${lesTitle}» مع أمثلة محلولة وتدريبات شاملة لطلاب ${grade}.`,
+                  keyTakeaways: [
+                    'فهم القوانين الأساسية والتعريفات المرتبطة بالدرس.',
+                    'حل مسائل متدرجة المستوى وفق مواصفات الامتحان.',
+                    'مراجعة أبرز نقاط الفهم الشائعة قبل الاختبار.',
+                  ],
+                  videos: [],
+                  attachments: [],
+                  examQuestions: [defaultQuiz(lesTitle)],
+                  simulationKind: 'math-calculus' as const,
+                  quiz: defaultQuiz(lesTitle),
+                })),
+              },
+            ];
+
+      const totalLessonsCount = resolvedModules.reduce(
+        (acc: number, m: { lessons?: unknown[] }) =>
+          acc + (Array.isArray(m.lessons) ? m.lessons.length : 0),
+        0
+      );
+
       const newCourse: CustomCourseRecord = {
         id: courseId,
         title,
@@ -644,39 +748,11 @@ async function startServer() {
         category,
         studyMode,
         priceEgp,
-        totalHours: Math.max(4, lessonsList.length * 2),
+        totalHours: Math.max(4, totalLessonsCount * 2),
         instructorId,
         image: image || '/src/assets/images/course_math_calculus_1794779284413.jpg',
         fallbackTitle: title,
-        modules: [
-          {
-            id: `mod-${Date.now()}`,
-            title: 'محتوى الكورس والحصص',
-            lessons: lessonsList.map((lesTitle, idx) => ({
-              id: `les-${Date.now()}-${idx + 1}`,
-              title: lesTitle,
-              durationMinutes: 45,
-              summary: `شرح تفصيلي لدرس «${lesTitle}» مع أمثلة محلولة وتدريبات شاملة لطلاب ${grade}.`,
-              keyTakeaways: [
-                'فهم القوانين الأساسية والتعريفات المرتبطة بالدرس.',
-                'حل مسائل متدرجة المستوى وفق مواصفات الامتحان.',
-                'مراجعة أبرز نقاط الفهم الشائعة قبل الاختبار.',
-              ],
-              simulationKind: 'math-calculus',
-              quiz: {
-                question: `اختبار سريع على: ${lesTitle}`,
-                options: [
-                  'مراجعة المفهوم الأساسي وتطبيق القانون المباشر',
-                  'إهمال شروط التعريف في المسألة',
-                  'الاعتماد على خطوات غير مكتملة',
-                  'لا شيء مما سبق',
-                ],
-                correctIndex: 0,
-                explanation: 'الخطوة الصحيحة دائمًا تبدأ بتحقيق شروط القانون الأساسي ثم التعويض الدقيق.',
-              },
-            })),
-          },
-        ],
+        modules: resolvedModules,
       };
 
       const catalog = await ensureCatalogDb();
@@ -688,6 +764,61 @@ async function startServer() {
       res.status(500).json({ error: 'تعذر إضافة الكورس.' });
     }
   });
+
+  // Admin: update an existing course and its vertical lessons, videos, files & exams
+  app.put(
+    '/api/supervisor/courses/:id',
+    requireSupervisor,
+    async (req: Request, res: Response) => {
+      try {
+        const courseId = req.params.id;
+        const body = req.body as Partial<CustomCourseRecord>;
+        const title = String(body?.title ?? '').trim();
+        const grade = String(body?.grade ?? '').trim();
+        const instructorId = String(body?.instructorId ?? '').trim();
+
+        if (!title || !grade || !instructorId || !Array.isArray(body?.modules)) {
+          res.status(400).json({ error: 'بيانات الكورس غير مكتملة.' });
+          return;
+        }
+
+        const totalLessonsCount = body.modules.reduce(
+          (acc, m) => acc + (Array.isArray(m.lessons) ? m.lessons.length : 0),
+          0
+        );
+
+        const updatedCourse: CustomCourseRecord = {
+          id: courseId,
+          title,
+          subtitle: String(body.subtitle ?? '').trim() || title,
+          grade,
+          category: String(body.category ?? '').trim() || 'محتوى المنهج',
+          studyMode: body.studyMode === 'أونلاين' ? 'أونلاين' : 'سنتر وأونلاين',
+          priceEgp: Number(body.priceEgp) || 0,
+          totalHours: Number(body.totalHours) || Math.max(2, totalLessonsCount * 2),
+          instructorId,
+          image:
+            String(body.image ?? '').trim() ||
+            '/src/assets/images/course_math_calculus_1794779284413.jpg',
+          fallbackTitle: String(body.fallbackTitle ?? '').trim() || title,
+          modules: body.modules,
+        };
+
+        const catalog = await ensureCatalogDb();
+        const existingIdx = catalog.customCourses.findIndex((c) => c.id === courseId);
+        if (existingIdx >= 0) {
+          catalog.customCourses[existingIdx] = updatedCourse;
+        } else {
+          catalog.customCourses.unshift(updatedCourse);
+        }
+        await saveCatalogDb(catalog);
+        res.json({ course: updatedCourse });
+      } catch (err) {
+        console.error('Update course error:', err);
+        res.status(500).json({ error: 'تعذر تحديث بيانات الكورس والحصص.' });
+      }
+    }
+  );
 
   app.delete(
     '/api/supervisor/courses/:id',

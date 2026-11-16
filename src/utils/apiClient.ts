@@ -610,6 +610,61 @@ export async function apiDeleteTeacher(token: string, teacherId: string): Promis
   return true;
 }
 
+export function mergeCatalogCourses(
+  customCourses: Course[],
+  builtInCourses: Course[]
+): Course[] {
+  const overrideMap = new Map(customCourses.map((c) => [c.id, c]));
+  const builtInIds = new Set(builtInCourses.map((c) => c.id));
+  const customOnly = customCourses.filter((c) => !builtInIds.has(c.id));
+  const mergedBuiltIn = builtInCourses.map((c) => overrideMap.get(c.id) ?? c);
+  return [...customOnly, ...mergedBuiltIn];
+}
+
+export async function apiUploadMediaFile(
+  token: string,
+  file: File
+): Promise<{ ok: true; url: string; fileName: string } | { ok: false; error: string }> {
+  try {
+    const res = await fetch('/api/supervisor/upload', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'x-file-name': encodeURIComponent(file.name),
+        'Content-Type': file.type || 'application/octet-stream',
+      },
+      body: file,
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const data = (await res.json()) as { url?: string; fileName?: string; error?: string };
+      if (!res.ok || !data.url) {
+        return { ok: false, error: data.error || 'تعذر رفع الملف على الخادم.' };
+      }
+      return { ok: true, url: data.url, fileName: data.fileName || file.name };
+    }
+  } catch {
+    // Fall through to static preview fallback below
+  }
+
+  // Static preview fallback when Express server is unavailable
+  if (file.size <= 1.5 * 1024 * 1024) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve({ ok: true, url: String(reader.result), fileName: file.name });
+      };
+      reader.onerror = () => {
+        resolve({ ok: false, error: 'تعذر قراءة الملف المختار.' });
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  const blobUrl = URL.createObjectURL(file);
+  return { ok: true, url: blobUrl, fileName: file.name };
+}
+
 export async function apiAddCourse(
   token: string,
   payload: {
@@ -663,19 +718,9 @@ export async function apiAddCourse(
     modules: [
       {
         id: `mod-${Date.now()}`,
-        title: 'محتوى الكورس والحصص',
-        lessons: lessonsList.map((lesTitle, idx) => ({
-          id: `les-${Date.now()}-${idx + 1}`,
-          title: lesTitle,
-          durationMinutes: 45,
-          summary: `شرح تفصيلي لدرس «${lesTitle}» مع أمثلة محلولة وتدريبات شاملة لطلاب ${payload.grade}.`,
-          keyTakeaways: [
-            'فهم القوانين الأساسية والتعريفات المرتبطة بالدرس.',
-            'حل مسائل متدرجة المستوى وفق مواصفات الامتحان.',
-            'مراجعة أبرز نقاط الفهم الشائعة قبل الاختبار.',
-          ],
-          simulationKind: 'math-calculus',
-          quiz: {
+        title: 'الحصص الدراسية',
+        lessons: lessonsList.map((lesTitle, idx) => {
+          const defaultQ = {
             question: `اختبار سريع على: ${lesTitle}`,
             options: [
               'مراجعة المفهوم الأساسي وتطبيق القانون المباشر',
@@ -685,14 +730,63 @@ export async function apiAddCourse(
             ],
             correctIndex: 0,
             explanation: 'الخطوة الصحيحة دائمًا تبدأ بتحقيق شروط القانون الأساسي ثم التعويض الدقيق.',
-          },
-        })),
+          };
+          return {
+            id: `les-${Date.now()}-${idx + 1}`,
+            title: lesTitle,
+            durationMinutes: 45,
+            summary: `شرح تفصيلي لدرس «${lesTitle}» مع أمثلة محلولة وتدريبات شاملة لطلاب ${payload.grade}.`,
+            keyTakeaways: [
+              'فهم القوانين الأساسية والتعريفات المرتبطة بالدرس.',
+              'حل مسائل متدرجة المستوى وفق مواصفات الامتحان.',
+              'مراجعة أبرز نقاط الفهم الشائعة قبل الاختبار.',
+            ],
+            videos: [],
+            attachments: [],
+            examQuestions: [defaultQ],
+            simulationKind: 'math-calculus' as const,
+            quiz: defaultQ,
+          };
+        }),
       },
     ],
   };
 
   const catalog = getLocalCatalog();
   catalog.customCourses.unshift(course);
+  saveLocalCatalog(catalog);
+  return { ok: true, course };
+}
+
+export async function apiUpdateCourse(
+  token: string,
+  course: Course
+): Promise<{ ok: true; course: Course } | { ok: false; error: string }> {
+  const serverRes = await tryServerJson<{ course?: Course; error?: string }>(
+    `/api/supervisor/courses/${course.id}`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(course),
+    }
+  );
+  if (serverRes) {
+    if (!serverRes.ok || !serverRes.data.course) {
+      return { ok: false, error: serverRes.data.error || 'تعذر حفظ تعديلات الكورس.' };
+    }
+    return { ok: true, course: serverRes.data.course };
+  }
+
+  const catalog = getLocalCatalog();
+  const idx = catalog.customCourses.findIndex((c) => c.id === course.id);
+  if (idx >= 0) {
+    catalog.customCourses[idx] = course;
+  } else {
+    catalog.customCourses.unshift(course);
+  }
   saveLocalCatalog(catalog);
   return { ok: true, course };
 }

@@ -39,6 +39,7 @@ import { AdminTab, SupervisorDashboard } from './components/SupervisorDashboard'
 import {
   apiFetchAcademyCatalog,
   apiSyncStudentProgress,
+  mergeCatalogCourses,
 } from './utils/apiClient';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from './firebase';
@@ -50,6 +51,7 @@ import {
 type AppView =
   | 'home'
   | 'courses'
+  | 'subscriptions'
   | 'classroom'
   | 'dashboard'
   | 'supervisor';
@@ -166,15 +168,29 @@ export default function App() {
   }, []);
 
   const allCourses = useMemo(
-    () => [...customCourses, ...COURSES],
+    () => mergeCatalogCourses(customCourses, COURSES),
     [customCourses]
   );
 
-  const resolveInstructorName = (instructorId: string): string => {
+  const resolveInstructorInfo = (instructorId: string) => {
     const dynamic = teachers.find((t) => t.id === instructorId);
-    if (dynamic) return dynamic.name;
-    return getInstructorById(instructorId).name;
+    if (dynamic) {
+      return {
+        name: dynamic.name,
+        subject: dynamic.subject,
+        image: dynamic.image,
+      };
+    }
+    const builtIn = getInstructorById(instructorId);
+    return {
+      name: builtIn.name,
+      subject: builtIn.specialty,
+      image: builtIn.image,
+    };
   };
+
+  const resolveInstructorName = (instructorId: string): string =>
+    resolveInstructorInfo(instructorId).name;
 
   const syncStudentProgressToServer = async (nextSession: SessionState) => {
     if (nextSession.role !== 'student' || !nextSession.studentId || !nextSession.token) {
@@ -355,10 +371,17 @@ export default function App() {
     }
   };
 
+  const subscribedCourses = useMemo(() => {
+    if (session.role !== 'student') return [];
+    return allCourses.filter((course) =>
+      session.unlockedCourseIds.includes(course.id)
+    );
+  }, [allCourses, session.role, session.unlockedCourseIds]);
+
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
+    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900 overflow-x-clip max-w-full">
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-xs border-b border-slate-200 no-print">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4 sm:gap-8">
           <button
             type="button"
             onClick={() => navigateTo('home')}
@@ -382,6 +405,16 @@ export default function App() {
               }`}
             >
               الكورسات
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigateTo('subscriptions')}
+              className={`hover:text-slate-900 hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                view === 'subscriptions' ? 'text-slate-900 font-semibold' : ''
+              }`}
+            >
+              اشتراكاتي مع المدرسين
             </button>
           </nav>
 
@@ -419,6 +452,13 @@ export default function App() {
             </button>
             <button
               type="button"
+              onClick={() => navigateTo('subscriptions')}
+              className="block w-full text-right px-3 py-2.5 text-sm font-medium text-slate-800 rounded-lg hover:bg-slate-100"
+            >
+              اشتراكاتي مع المدرسين
+            </button>
+            <button
+              type="button"
               onClick={handleHeaderPrimaryClick}
               className="block w-full text-center px-4 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800"
             >
@@ -428,7 +468,7 @@ export default function App() {
         )}
       </header>
 
-      <main className="flex-1">
+      <main className="flex-1 min-w-0">
         {view === 'supervisor' && session.role === 'supervisor' ? (
           <SupervisorDashboard
             supervisorName={session.supervisorName}
@@ -443,7 +483,11 @@ export default function App() {
         ) : view === 'classroom' ? (
           <ClassroomView
             course={activeCourse}
-            isUnlocked={session.unlockedCourseIds.includes(activeCourse.id)}
+            instructorName={resolveInstructorName(activeCourse.instructorId)}
+            isUnlocked={
+              session.role === 'supervisor' ||
+              session.unlockedCourseIds.includes(activeCourse.id)
+            }
             completedLessonIds={session.completedLessonIds}
             notesByLesson={session.notesByLesson}
             quizAnswers={session.quizAnswers}
@@ -462,6 +506,7 @@ export default function App() {
             studentGrade={session.studentGrade}
             studentSpecialization={session.studentSpecialization}
             courses={allCourses}
+            teachers={teachers}
             unlockedCourseIds={session.unlockedCourseIds}
             onUpdateStudentName={(name) =>
               setSession((prev) => ({ ...prev, studentName: name }))
@@ -472,6 +517,182 @@ export default function App() {
             onOpenCourse={openCourse}
             onLogout={handleLogout}
           />
+        ) : view === 'subscriptions' ? (
+          <section className="py-10 sm:py-14 bg-white min-h-[75vh]">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
+              <div className="flex flex-wrap items-end justify-between gap-4 pb-6 border-b border-slate-200">
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => navigateTo('home')}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 hover:text-blue-900 cursor-pointer"
+                  >
+                    <ArrowRight className="w-4 h-4" />
+                    <span>العودة للرئيسية</span>
+                  </button>
+                  <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">
+                    اشتراكاتي مع المدرسين
+                  </h1>
+                  <p className="text-sm text-slate-600">
+                    جميع الكورسات والحصص المفعلة لك مع مدرسيك في المنصة.
+                  </p>
+                </div>
+              </div>
+
+              {session.role === 'guest' ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-8 sm:p-12 text-center space-y-4 max-w-xl mx-auto">
+                  <Lock className="w-9 h-9 text-blue-700 mx-auto" />
+                  <h2 className="text-lg font-bold text-slate-900">
+                    سجّل دخولك لعرض اشتراكاتك مع المدرسين
+                  </h2>
+                  <p className="text-sm text-slate-600 leading-relaxed">
+                    بعد تسجيل الدخول بحساب الطالب، ستظهر هنا جميع المواد والمدرسين المشترك معهم للوصول السريع للحصص والامتحانات.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowAuthModal(true)}
+                    className="inline-flex items-center justify-center px-6 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors cursor-pointer"
+                  >
+                    تسجيل الدخول
+                  </button>
+                </div>
+              ) : session.role === 'supervisor' ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-8 text-center space-y-4 max-w-xl mx-auto">
+                  <BookOpen className="w-9 h-9 text-blue-700 mx-auto" />
+                  <h2 className="text-lg font-bold text-slate-900">
+                    أنت مسجل حاليًا بحساب الإدارة
+                  </h2>
+                  <p className="text-sm text-slate-600 leading-relaxed">
+                    يمكنك تفعيل اشتراكات الطلاب أو التحكم في الكورسات والحصص من لوحة الإدارة.
+                  </p>
+                  <div className="flex flex-wrap items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAdminTab('courses');
+                        navigateTo('supervisor');
+                      }}
+                      className="px-5 py-2.5 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 cursor-pointer"
+                    >
+                      إدارة الكورسات والحصص
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAdminTab('students');
+                        navigateTo('supervisor');
+                      }}
+                      className="px-5 py-2.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 cursor-pointer"
+                    >
+                      تفعيل اشتراكات الطلاب
+                    </button>
+                  </div>
+                </div>
+              ) : subscribedCourses.length === 0 ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-10 text-center space-y-4">
+                  <BookOpen className="w-9 h-9 text-slate-400 mx-auto" />
+                  <h2 className="text-lg font-bold text-slate-900">
+                    لا توجد اشتراكات مفعلة في حسابك حتى الآن
+                  </h2>
+                  <p className="text-sm text-slate-600">
+                    تصفح كورسات {session.studentGrade} وتواصل مع الإدارة لتفعيل اشتراكاتك مع المدرسين.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => navigateTo('courses')}
+                    className="px-5 py-2.5 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 cursor-pointer"
+                  >
+                    استعرض الكورسات
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {subscribedCourses.map((course) => {
+                    const inst = resolveInstructorInfo(course.instructorId);
+                    const lessons = getCourseAllLessons(course);
+                    const doneCount = lessons.filter((l) =>
+                      session.completedLessonIds.includes(l.id)
+                    ).length;
+                    const pct =
+                      lessons.length > 0
+                        ? Math.round((doneCount / lessons.length) * 100)
+                        : 0;
+
+                    return (
+                      <article
+                        key={course.id}
+                        className="bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between"
+                      >
+                        <div>
+                          <div className="aspect-[4/3] bg-slate-100 border-b border-slate-200 overflow-hidden">
+                            <ResilientImage
+                              src={course.image}
+                              alt={course.title}
+                              fallbackTitle={course.fallbackTitle}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+
+                          <div className="p-5 space-y-3">
+                            <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+                              <div className="w-10 h-10 rounded-full overflow-hidden border border-slate-200 bg-slate-100 shrink-0">
+                                <ResilientImage
+                                  src={inst.image}
+                                  alt={inst.name}
+                                  fallbackTitle={inst.name}
+                                  className="w-full h-full object-cover object-top"
+                                />
+                              </div>
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-slate-900 truncate">
+                                  {inst.name}
+                                </div>
+                                <div className="text-xs text-blue-700 truncate">
+                                  {inst.subject}
+                                </div>
+                              </div>
+                            </div>
+
+                            <h3 className="text-base font-bold text-slate-900 leading-snug">
+                              {course.title}
+                            </h3>
+
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between text-xs text-slate-600 tabular-nums">
+                                <span>
+                                  {doneCount} من {lessons.length} حصص
+                                </span>
+                                <span className="font-mono font-semibold text-blue-700">
+                                  {pct}%
+                                </span>
+                              </div>
+                              <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-blue-700"
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="px-5 pb-5">
+                          <button
+                            type="button"
+                            onClick={() => openCourse(course.id)}
+                            className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors cursor-pointer"
+                          >
+                            <BookOpen className="w-4 h-4" />
+                            <span>دخول الحصص</span>
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </section>
         ) : view === 'courses' ? (
           <section className="py-12 lg:py-16 bg-white min-h-[75vh]">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
@@ -684,7 +905,7 @@ export default function App() {
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-stretch">
                   <div className="lg:col-span-6 flex flex-col justify-center space-y-6">
                     <div className="text-xs font-medium text-blue-700">
-                      منصة التعليم الثانوي المتكاملة · أونلاين وسنتر
+                      منصة التعليم الثانوي المتكاملة · أونلاين
                     </div>
 
                     <h1
@@ -695,7 +916,7 @@ export default function App() {
                     </h1>
 
                     <p className="text-base sm:text-lg text-slate-600 leading-relaxed max-w-xl">
-                      منصة متخصصة لطلاب المرحلة الثانوية والبكالوريا؛ شرح منهجي، حصص تفاعلية، وكورسات مخصصة لكل مرحلة دراسية.
+                      منصة متخصصة لطلاب المرحلة الثانوية والبكالوريا؛ شرح منهجي، وكورسات مخصصة لكل مرحلة دراسية.
                     </p>
 
                     <div className="flex flex-wrap items-center gap-3 pt-2">
@@ -879,6 +1100,13 @@ export default function App() {
               className="hover:text-slate-900 transition-colors"
             >
               الكورسات
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('subscriptions')}
+              className="hover:text-slate-900 transition-colors"
+            >
+              اشتراكاتي مع المدرسين
             </button>
           </div>
           <div className="tabular-nums">© 2026 Ezz Academy. جميع الحقوق محفوظة.</div>

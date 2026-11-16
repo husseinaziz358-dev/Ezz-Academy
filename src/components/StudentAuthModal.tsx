@@ -114,12 +114,13 @@ export function StudentAuthModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs overflow-y-auto"
+      className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 p-3 sm:p-4 backdrop-blur-xs"
       role="dialog"
       aria-modal="true"
       aria-labelledby="auth-modal-title"
     >
-      <div className="bg-white rounded-xl border border-slate-200 max-w-xl w-full p-6 sm:p-7 shadow-2xl space-y-5 my-8">
+      <div className="min-h-full flex items-start sm:items-center justify-center py-3 sm:py-6">
+        <div className="bg-white rounded-xl border border-slate-200 max-w-xl w-full p-4 sm:p-7 shadow-2xl space-y-5 overflow-x-hidden">
         <div className="flex items-center justify-between gap-4 pb-4 border-b border-slate-200">
           <div className="flex items-center gap-2 text-slate-900">
             <UserCheck className="w-5 h-5 text-blue-700" />
@@ -444,6 +445,7 @@ export function StudentAuthModal({
             </div>
           </form>
         )}
+        </div>
       </div>
     </div>
   );

@@ -8,11 +8,14 @@ import {
 } from '../data/academyData';
 import { CertificateModal } from './CertificateModal';
 
+import { DynamicTeacher } from '../types/student';
+
 interface ProgressDashboardProps {
   studentName: string;
   studentGrade: string;
   studentSpecialization?: string;
   courses?: Course[];
+  teachers?: DynamicTeacher[];
   unlockedCourseIds: string[];
   onUpdateStudentName: (name: string) => void;
   completedLessonIds: string[];
@@ -27,6 +30,7 @@ export function ProgressDashboard({
   studentGrade,
   studentSpecialization,
   courses,
+  teachers = [],
   unlockedCourseIds,
   onUpdateStudentName,
   completedLessonIds,
@@ -52,9 +56,17 @@ export function ProgressDashboard({
   );
 
   const answeredCount = Object.keys(quizAnswers).length;
-  const correctAnswersCount = Object.entries(quizAnswers).filter(([lessonId, opt]) => {
-    const entry = allLessonsMap.get(lessonId);
-    return entry && entry.lesson.quiz.correctIndex === opt;
+  const correctAnswersCount = Object.entries(quizAnswers).filter(([answerKey, opt]) => {
+    const [rawLessonId, qSuffix] = answerKey.split('__q');
+    const qIdx = qSuffix !== undefined ? Number(qSuffix) : 0;
+    const entry = allLessonsMap.get(rawLessonId);
+    if (!entry) return false;
+    const questions =
+      entry.lesson.examQuestions && entry.lesson.examQuestions.length > 0
+        ? entry.lesson.examQuestions
+        : [entry.lesson.quiz];
+    const targetQuestion = questions[qIdx];
+    return targetQuestion ? targetQuestion.correctIndex === opt : false;
   }).length;
 
   const savedNotesEntries = Object.entries(notesByLesson).filter(
@@ -161,8 +173,11 @@ export function ProgressDashboard({
           {visibleCourses.map((course) => {
             const lessons = getCourseAllLessons(course);
             const doneCount = lessons.filter((l) => completedLessonIds.includes(l.id)).length;
-            const pct = Math.round((doneCount / lessons.length) * 100);
-            const instructor = getInstructorById(course.instructorId);
+            const pct = lessons.length > 0 ? Math.round((doneCount / lessons.length) * 100) : 0;
+            const dynamicTeacher = teachers.find((t) => t.id === course.instructorId);
+            const instructorName = dynamicTeacher
+              ? dynamicTeacher.name
+              : getInstructorById(course.instructorId).name;
             const isUnlocked = unlockedCourseIds.includes(course.id);
 
             return (
@@ -173,7 +188,7 @@ export function ProgressDashboard({
                 <div>
                   <div className="flex items-center justify-between gap-2 text-xs text-slate-500 mb-2">
                     <span>
-                      {course.grade} · {instructor.name}
+                      {course.grade} · {instructorName}
                     </span>
                     <span className="font-mono tabular-nums text-slate-700 font-semibold">
                       {isUnlocked ? `${pct}%` : 'غير مفعل'}
@@ -259,6 +274,9 @@ export function ProgressDashboard({
         <CertificateModal
           course={certCourse}
           studentName={studentName}
+          instructorName={
+            teachers.find((t) => t.id === certCourse.instructorId)?.name
+          }
           onUpdateStudentName={onUpdateStudentName}
           onClose={() => setCertCourse(null)}
         />
