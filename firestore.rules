@@ -69,7 +69,10 @@ service cloud.firestore {
         'attendanceDates',
         'walletBalance',
         'isBlocked',
+        'autoBlockExempt',
+        'blockReason',
         'activeDeviceIds',
+        'deviceDetails',
         'createdAt',
         'updatedAt'
       ])
@@ -106,7 +109,10 @@ service cloud.firestore {
       && (!('attendanceDates' in data) || (data.attendanceDates is map && data.attendanceDates.size() <= 200))
       && (!('walletBalance' in data) || (data.walletBalance is int && data.walletBalance >= 0 && data.walletBalance <= 1000000))
       && (!('isBlocked' in data) || data.isBlocked is bool)
+      && (!('autoBlockExempt' in data) || data.autoBlockExempt is bool)
+      && (!('blockReason' in data) || (data.blockReason is string && data.blockReason.size() <= 300))
       && (!('activeDeviceIds' in data) || (data.activeDeviceIds is list && data.activeDeviceIds.size() <= 20 && (data.activeDeviceIds.size() == 0 || data.activeDeviceIds[0] is string)))
+      && (!('deviceDetails' in data) || (data.deviceDetails is map && data.deviceDetails.size() <= 20))
       && data.createdAt is timestamp
       && data.updatedAt is timestamp;
     }
@@ -199,6 +205,8 @@ service cloud.firestore {
         && incoming().attendanceRate == 0
         && (!('walletBalance' in incoming()) || incoming().walletBalance == 0)
         && (!('isBlocked' in incoming()) || incoming().isBlocked == false)
+        && (!('autoBlockExempt' in incoming()) || incoming().autoBlockExempt == false)
+        && (!('blockReason' in incoming()) || incoming().blockReason == '')
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(studentUid)
@@ -212,6 +220,8 @@ service cloud.firestore {
             isOwner(studentUid)
             && (!('isBlocked' in existing()) || existing().isBlocked == false)
             && (!('walletBalance' in incoming()) || (!('walletBalance' in existing()) && incoming().walletBalance == 0) || ('walletBalance' in existing() && incoming().walletBalance <= existing().walletBalance))
+            && (!('isBlocked' in incoming()) || incoming().isBlocked == false || (incoming().isBlocked == true && (!('autoBlockExempt' in existing()) || existing().autoBlockExempt == false)))
+            && (!('blockReason' in incoming()) || incoming().isBlocked == true || incoming().blockReason == '')
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'unlockedCourseIds',
               'completedLessonIds',
@@ -220,7 +230,10 @@ service cloud.firestore {
               'attendanceRate',
               'attendanceDates',
               'walletBalance',
+              'isBlocked',
+              'blockReason',
               'activeDeviceIds',
+              'deviceDetails',
               'updatedAt'
             ])
           )

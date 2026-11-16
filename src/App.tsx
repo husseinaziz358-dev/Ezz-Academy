@@ -5,6 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Bell,
@@ -14,8 +15,10 @@ import {
   ChevronRight,
   Lock,
   Menu,
+  Moon,
   Plus,
   Search,
+  Sun,
   Wallet,
   X,
 } from 'lucide-react';
@@ -35,6 +38,7 @@ import {
 import {
   DynamicTeacher,
   EDUCATIONAL_STAGES,
+  StudentDeviceInfo,
   StudentNotification,
   StudentRecord,
 } from './types/student';
@@ -53,6 +57,7 @@ import {
   mergeCatalogCourses,
 } from './utils/apiClient';
 import { computeStudentAttendance, getTodayDateKey } from './utils/attendance';
+import { getClientDeviceInfo, mergeStudentDeviceEntry } from './utils/deviceInfo';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from './firebase';
 import {
@@ -86,11 +91,14 @@ interface SessionState {
   notesByLesson: Record<string, string>;
   quizAnswers: Record<string, number>;
   walletBalance: number;
+  autoBlockExempt: boolean;
   activeDeviceIds: string[];
+  deviceDetails: Record<string, StudentDeviceInfo>;
   notifications: StudentNotification[];
 }
 
 const STORAGE_KEY = 'ezz_academy_session_v3';
+const THEME_STORAGE_KEY = 'ezz_academy_theme';
 
 const DEFAULT_SESSION: SessionState = {
   role: 'guest',
@@ -108,7 +116,9 @@ const DEFAULT_SESSION: SessionState = {
   notesByLesson: {},
   quizAnswers: {},
   walletBalance: 0,
+  autoBlockExempt: false,
   activeDeviceIds: [],
+  deviceDetails: {},
   notifications: [],
 };
 
@@ -140,11 +150,34 @@ export default function App() {
     text: string;
   } | null>(null);
   const [blockedBanner, setBlockedBanner] = useState<string>('');
+  const [dismissedAutoBlockWarning, setDismissedAutoBlockWarning] = useState<boolean>(false);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem(THEME_STORAGE_KEY) === 'dark';
+    } catch {
+      return false;
+    }
+  });
 
   const [teachers, setTeachers] = useState<DynamicTeacher[]>([]);
   const [customCourses, setCustomCourses] = useState<Course[]>([]);
   const [deletedCourseIds, setDeletedCourseIds] = useState<string[]>([]);
   const teachersScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (isDarkMode) {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, isDarkMode ? 'dark' : 'light');
+    } catch {
+      // Ignore storage errors
+    }
+  }, [isDarkMode]);
 
   const [session, setSession] = useState<SessionState>(() => {
     try {
@@ -168,9 +201,14 @@ export default function App() {
           quizAnswers: parsed.quizAnswers ?? DEFAULT_SESSION.quizAnswers,
           walletBalance:
             typeof parsed.walletBalance === 'number' ? parsed.walletBalance : 0,
+          autoBlockExempt: parsed.autoBlockExempt === true,
           activeDeviceIds: Array.isArray(parsed.activeDeviceIds)
             ? parsed.activeDeviceIds
             : [],
+          deviceDetails:
+            parsed.deviceDetails && typeof parsed.deviceDetails === 'object'
+              ? parsed.deviceDetails
+              : {},
           notifications: Array.isArray(parsed.notifications)
             ? parsed.notifications
             : [],
@@ -260,6 +298,7 @@ export default function App() {
       await syncFirebaseStudentProgress(nextSession.studentId, {
         ...payload,
         activeDeviceIds: nextSession.activeDeviceIds,
+        deviceDetails: nextSession.deviceDetails,
       });
       return;
     }
@@ -270,21 +309,33 @@ export default function App() {
     const cur = sessionRef.current;
     if (cur.role !== 'student' || !cur.studentId || !cur.token) return;
     const deviceId = getOrCreateDeviceId();
+    const deviceInfo = getClientDeviceInfo(deviceId);
 
     if (cur.token === 'firebase-google-session') {
       try {
         const fresh = await loadFirebaseStudentByUid(cur.studentId);
         if (!fresh) return;
         if (fresh.isBlocked) {
-          setBlockedBanner('تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.');
+          setBlockedBanner(
+            fresh.blockReason || 'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.'
+          );
           handleLogout();
           return;
         }
         const devices = Array.isArray(fresh.activeDeviceIds) ? fresh.activeDeviceIds : [];
-        const nextDevices = devices.includes(deviceId)
-          ? devices
-          : [...devices, deviceId].slice(0, 20);
-        if (!devices.includes(deviceId)) {
+        const hasDetails = Boolean(fresh.deviceDetails && fresh.deviceDetails[deviceId]);
+        const mergedDevices = mergeStudentDeviceEntry(
+          devices,
+          fresh.deviceDetails,
+          deviceId,
+          deviceInfo
+        );
+        const shouldAutoBlock =
+          !fresh.autoBlockExempt && mergedDevices.activeDeviceIds.length >= 3;
+        const autoBlockReason =
+          'تم حظر الحساب تلقائيًا لتجاوز الحد المسموح للأجهزة (٣ أجهزة أو أكثر). تواصل مع المشرف لإيقاف الحظر.';
+
+        if (!devices.includes(deviceId) || !hasDetails || shouldAutoBlock) {
           await syncFirebaseStudentProgress(cur.studentId, {
             unlockedCourseIds: fresh.unlockedCourseIds,
             completedLessonIds: fresh.completedLessonIds,
@@ -292,14 +343,25 @@ export default function App() {
             quizAnswers: fresh.quizAnswers,
             attendanceRate: fresh.attendanceRate,
             attendanceDates: fresh.attendanceDates,
-            activeDeviceIds: nextDevices,
+            activeDeviceIds: mergedDevices.activeDeviceIds,
+            deviceDetails: mergedDevices.deviceDetails,
+            ...(shouldAutoBlock
+              ? { isBlocked: true, blockReason: autoBlockReason }
+              : {}),
           });
+        }
+        if (shouldAutoBlock) {
+          setBlockedBanner(autoBlockReason);
+          handleLogout();
+          return;
         }
         setSession((prev) => ({
           ...prev,
           walletBalance: fresh.walletBalance ?? 0,
+          autoBlockExempt: fresh.autoBlockExempt === true,
           unlockedCourseIds: fresh.unlockedCourseIds,
-          activeDeviceIds: nextDevices,
+          activeDeviceIds: mergedDevices.activeDeviceIds,
+          deviceDetails: mergedDevices.deviceDetails,
           notifications: fresh.notifications ?? prev.notifications,
         }));
       } catch {
@@ -311,15 +373,19 @@ export default function App() {
     const fresh = await apiFetchStudentProfile(cur.studentId, cur.token);
     if (!fresh) return;
     if (fresh.isBlocked) {
-      setBlockedBanner('تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.');
+      setBlockedBanner(
+        fresh.blockReason || 'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.'
+      );
       handleLogout();
       return;
     }
     setSession((prev) => ({
       ...prev,
       walletBalance: fresh.walletBalance ?? 0,
+      autoBlockExempt: fresh.autoBlockExempt === true,
       unlockedCourseIds: fresh.unlockedCourseIds,
       activeDeviceIds: fresh.activeDeviceIds ?? prev.activeDeviceIds,
+      deviceDetails: fresh.deviceDetails ?? prev.deviceDetails,
       notifications: fresh.notifications ?? prev.notifications,
     }));
   };
@@ -470,15 +536,46 @@ export default function App() {
 
   const handleStudentAuthenticated = (student: StudentRecord, token: string) => {
     if (student.isBlocked) {
-      setBlockedBanner('تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.');
+      setBlockedBanner(
+        student.blockReason || 'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.'
+      );
       return;
     }
     setBlockedBanner('');
+    setDismissedAutoBlockWarning(false);
     const deviceId = getOrCreateDeviceId();
+    const deviceInfo = getClientDeviceInfo(deviceId);
     const existingDevices = Array.isArray(student.activeDeviceIds) ? student.activeDeviceIds : [];
-    const nextDevices = existingDevices.includes(deviceId)
-      ? existingDevices
-      : [...existingDevices, deviceId].slice(0, 20);
+    const hasDetails = Boolean(student.deviceDetails && student.deviceDetails[deviceId]);
+    const mergedDevices = mergeStudentDeviceEntry(
+      existingDevices,
+      student.deviceDetails,
+      deviceId,
+      deviceInfo
+    );
+    const shouldAutoBlock =
+      !student.autoBlockExempt && mergedDevices.activeDeviceIds.length >= 3;
+    const autoBlockReason =
+      'تم حظر الحساب تلقائيًا لتجاوز الحد المسموح للأجهزة (٣ أجهزة أو أكثر). تواصل مع المشرف لإيقاف الحظر.';
+
+    if (shouldAutoBlock) {
+      if (token === 'firebase-google-session') {
+        void syncFirebaseStudentProgress(student.id, {
+          unlockedCourseIds: student.unlockedCourseIds,
+          completedLessonIds: student.completedLessonIds,
+          notesByLesson: student.notesByLesson,
+          quizAnswers: student.quizAnswers,
+          attendanceRate: student.attendanceRate,
+          attendanceDates: student.attendanceDates ?? {},
+          activeDeviceIds: mergedDevices.activeDeviceIds,
+          deviceDetails: mergedDevices.deviceDetails,
+          isBlocked: true,
+          blockReason: autoBlockReason,
+        });
+      }
+      setBlockedBanner(autoBlockReason);
+      return;
+    }
 
     const nextSession: SessionState = {
       role: 'student',
@@ -496,12 +593,14 @@ export default function App() {
       notesByLesson: student.notesByLesson,
       quizAnswers: student.quizAnswers,
       walletBalance: student.walletBalance ?? 0,
-      activeDeviceIds: nextDevices,
+      autoBlockExempt: student.autoBlockExempt === true,
+      activeDeviceIds: mergedDevices.activeDeviceIds,
+      deviceDetails: mergedDevices.deviceDetails,
       notifications: student.notifications ?? [],
     };
     sessionRef.current = nextSession;
     setSession(nextSession);
-    if (token === 'firebase-google-session' && !existingDevices.includes(deviceId)) {
+    if (token === 'firebase-google-session' && (!existingDevices.includes(deviceId) || !hasDetails)) {
       void syncFirebaseStudentProgress(student.id, {
         unlockedCourseIds: student.unlockedCourseIds,
         completedLessonIds: student.completedLessonIds,
@@ -509,7 +608,8 @@ export default function App() {
         quizAnswers: student.quizAnswers,
         attendanceRate: student.attendanceRate,
         attendanceDates: student.attendanceDates ?? {},
-        activeDeviceIds: nextDevices,
+        activeDeviceIds: mergedDevices.activeDeviceIds,
+        deviceDetails: mergedDevices.deviceDetails,
       });
     }
     navigateTo('dashboard');
@@ -634,6 +734,7 @@ export default function App() {
           attendanceDates: cur.attendanceDates,
           walletBalance: nextBalance,
           activeDeviceIds: cur.activeDeviceIds,
+          deviceDetails: cur.deviceDetails,
         });
         const nextSession: SessionState = {
           ...cur,
@@ -704,20 +805,20 @@ export default function App() {
   }, [allCourses, session.role, session.unlockedCourseIds]);
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900 overflow-x-clip max-w-full">
-      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-xs border-b border-slate-200 no-print">
+    <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-x-clip max-w-full transition-colors duration-200">
+      <header className="sticky top-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xs border-b border-slate-200 dark:border-slate-800 no-print">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4 sm:gap-8">
           <button
             type="button"
             onClick={() => navigateTo('home')}
-            className="font-display text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 cursor-pointer"
+            className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0 cursor-pointer"
           >
             Ezz Academy
           </button>
 
           <nav
             aria-label="التنقل الرئيسي"
-            className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600"
+            className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600 dark:text-slate-300"
           >
             <button
               type="button"
@@ -725,8 +826,8 @@ export default function App() {
                 setSelectedInstructorId('الكل');
                 navigateTo('courses');
               }}
-              className={`hover:text-slate-900 hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                view === 'courses' ? 'text-slate-900 font-semibold' : ''
+              className={`hover:text-slate-900 dark:hover:text-white hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                view === 'courses' ? 'text-slate-900 dark:text-white font-semibold' : ''
               }`}
             >
               الكورسات
@@ -735,8 +836,8 @@ export default function App() {
             <button
               type="button"
               onClick={() => navigateTo('subscriptions')}
-              className={`hover:text-slate-900 hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                view === 'subscriptions' ? 'text-slate-900 font-semibold' : ''
+              className={`hover:text-slate-900 dark:hover:text-white hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                view === 'subscriptions' ? 'text-slate-900 dark:text-white font-semibold' : ''
               }`}
             >
               اشتراكاتي مع المدرسين
@@ -744,6 +845,24 @@ export default function App() {
           </nav>
 
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsDarkMode((prev) => !prev)}
+              aria-pressed={isDarkMode}
+              aria-label={isDarkMode ? 'التبديل إلى الوضع النهاري' : 'التبديل إلى الوضع المظلم'}
+              title={isDarkMode ? 'الوضع النهاري' : 'الوضع المظلم للدراسة الليلية'}
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              {isDarkMode ? (
+                <Sun className="w-4 h-4 text-amber-400 shrink-0" />
+              ) : (
+                <Moon className="w-4 h-4 text-slate-700 shrink-0" />
+              )}
+              <span className="hidden lg:inline">
+                {isDarkMode ? 'الوضع النهاري' : 'الوضع المظلم'}
+              </span>
+            </button>
+
             {session.role === 'student' && (
               <>
                 <button
@@ -751,9 +870,9 @@ export default function App() {
                   onClick={handleOpenNotificationsModal}
                   aria-label="التنبيهات والإشعارات"
                   title="التنبيهات والإشعارات"
-                  className="relative inline-flex items-center justify-center p-2 text-slate-700 bg-slate-100 border border-slate-200 rounded-lg hover:bg-slate-200 transition-colors shrink-0 cursor-pointer"
+                  className="relative inline-flex items-center justify-center p-2 text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors shrink-0 cursor-pointer"
                 >
-                  <Bell className="w-4 h-4 text-slate-800" />
+                  <Bell className="w-4 h-4 text-slate-800 dark:text-slate-200" />
                   {session.notifications.filter((n) => !n.read).length > 0 && (
                     <span className="absolute -top-1.5 -left-1.5 min-w-[18px] h-[18px] px-1 text-[10px] font-bold text-white bg-red-600 rounded-full flex items-center justify-center tabular-nums">
                       {session.notifications.filter((n) => !n.read).length}
@@ -766,9 +885,9 @@ export default function App() {
                   onClick={handleOpenWalletModal}
                   aria-label="محفظة حسابي"
                   title="محفظة حسابي وشراء الكورسات"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-900 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-900 dark:text-blue-200 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
-                  <Wallet className="w-4 h-4 text-blue-700 shrink-0" />
+                  <Wallet className="w-4 h-4 text-blue-700 dark:text-blue-400 shrink-0" />
                   <span className="font-mono font-bold tabular-nums">
                     {session.walletBalance} ج.م
                   </span>
@@ -788,7 +907,7 @@ export default function App() {
               type="button"
               onClick={() => setMobileNavOpen((o) => !o)}
               aria-label={mobileNavOpen ? 'إغلاق القائمة' : 'فتح القائمة'}
-              className="md:hidden p-2 text-slate-700 hover:bg-slate-100 rounded-lg"
+              className="md:hidden p-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
             >
               {mobileNavOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
@@ -796,21 +915,21 @@ export default function App() {
         </div>
 
         {mobileNavOpen && (
-          <div className="md:hidden border-t border-slate-200 bg-white px-4 py-4 space-y-2">
+          <div className="md:hidden border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-4 space-y-2">
             <button
               type="button"
               onClick={() => {
                 setSelectedInstructorId('الكل');
                 navigateTo('courses');
               }}
-              className="block w-full text-right px-3 py-2.5 text-sm font-medium text-slate-800 rounded-lg hover:bg-slate-100"
+              className="block w-full text-right px-3 py-2.5 text-sm font-medium text-slate-800 dark:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               الكورسات
             </button>
             <button
               type="button"
               onClick={() => navigateTo('subscriptions')}
-              className="block w-full text-right px-3 py-2.5 text-sm font-medium text-slate-800 rounded-lg hover:bg-slate-100"
+              className="block w-full text-right px-3 py-2.5 text-sm font-medium text-slate-800 dark:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               اشتراكاتي مع المدرسين
             </button>
@@ -827,18 +946,50 @@ export default function App() {
 
       <main className="flex-1 min-w-0">
         {blockedBanner && (
-          <div className="bg-red-50 border-b border-red-200 px-4 py-3 text-xs font-semibold text-red-800 flex items-center justify-between gap-3">
-            <span>{blockedBanner}</span>
+          <div className="bg-red-50 dark:bg-red-950/70 border-b border-red-200 dark:border-red-800 px-4 py-3 text-xs sm:text-sm font-semibold text-red-800 dark:text-red-200 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+              <span>{blockedBanner}</span>
+            </div>
             <button
               type="button"
               onClick={() => setBlockedBanner('')}
-              className="p-1 text-red-700 hover:bg-red-100 rounded"
+              className="p-1 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/60 rounded"
               aria-label="إغلاق التنبيه"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
         )}
+
+        {session.role === 'student' &&
+          !session.autoBlockExempt &&
+          session.activeDeviceIds.length >= 2 &&
+          !dismissedAutoBlockWarning && (
+            <div
+              role="alert"
+              className="bg-amber-50 dark:bg-amber-950/70 border-b border-amber-300 dark:border-amber-800 px-4 py-3 text-xs sm:text-sm font-semibold text-amber-950 dark:text-amber-100 flex items-center justify-between gap-3"
+            >
+              <div className="flex items-start sm:items-center gap-2.5 max-w-6xl mx-auto flex-1">
+                <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+                <span>
+                  إنذار الحظر التلقائي: تم تسجيل دخول حسابك من{' '}
+                  <span className="font-bold tabular-nums">
+                    {session.activeDeviceIds.length} أجهزة
+                  </span>
+                  . الحد الأقصى المسموح به هو جهازان، وفي حال فتح الحساب من جهاز ثالث سيتم حظر الحساب تلقائيًا.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDismissedAutoBlockWarning(true)}
+                className="p-1 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60 rounded shrink-0"
+                aria-label="إغلاق إنذار الحظر التلقائي"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
 
         {view === 'supervisor' && session.role === 'supervisor' ? (
           <SupervisorDashboard
@@ -900,34 +1051,34 @@ export default function App() {
             onLogout={handleLogout}
           />
         ) : view === 'subscriptions' ? (
-          <section className="py-10 sm:py-14 bg-white min-h-[75vh]">
+          <section className="py-10 sm:py-14 bg-white dark:bg-slate-950 min-h-[75vh]">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
-              <div className="flex flex-wrap items-end justify-between gap-4 pb-6 border-b border-slate-200">
+              <div className="flex flex-wrap items-end justify-between gap-4 pb-6 border-b border-slate-200 dark:border-slate-800">
                 <div className="space-y-2">
                   <button
                     type="button"
                     onClick={() => navigateTo('home')}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 hover:text-blue-900 cursor-pointer"
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 dark:text-blue-400 hover:text-blue-900 dark:hover:text-blue-300 cursor-pointer"
                   >
                     <ArrowRight className="w-4 h-4" />
                     <span>العودة للرئيسية</span>
                   </button>
-                  <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">
+                  <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">
                     اشتراكاتي مع المدرسين
                   </h1>
-                  <p className="text-sm text-slate-600">
+                  <p className="text-sm text-slate-600 dark:text-slate-400">
                     جميع الكورسات والحصص المفعلة لك مع مدرسيك في المنصة.
                   </p>
                 </div>
               </div>
 
               {session.role === 'guest' ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-8 sm:p-12 text-center space-y-4 max-w-xl mx-auto">
-                  <Lock className="w-9 h-9 text-blue-700 mx-auto" />
-                  <h2 className="text-lg font-bold text-slate-900">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 p-8 sm:p-12 text-center space-y-4 max-w-xl mx-auto">
+                  <Lock className="w-9 h-9 text-blue-700 dark:text-blue-400 mx-auto" />
+                  <h2 className="text-lg font-bold text-slate-900 dark:text-white">
                     سجّل دخولك لعرض اشتراكاتك مع المدرسين
                   </h2>
-                  <p className="text-sm text-slate-600 leading-relaxed">
+                  <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
                     بعد تسجيل الدخول بحساب الطالب، ستظهر هنا جميع المواد والمدرسين المشترك معهم للوصول السريع للحصص والامتحانات.
                   </p>
                   <button
@@ -939,12 +1090,12 @@ export default function App() {
                   </button>
                 </div>
               ) : session.role === 'supervisor' ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-8 text-center space-y-4 max-w-xl mx-auto">
-                  <BookOpen className="w-9 h-9 text-blue-700 mx-auto" />
-                  <h2 className="text-lg font-bold text-slate-900">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 p-8 text-center space-y-4 max-w-xl mx-auto">
+                  <BookOpen className="w-9 h-9 text-blue-700 dark:text-blue-400 mx-auto" />
+                  <h2 className="text-lg font-bold text-slate-900 dark:text-white">
                     أنت مسجل حاليًا بحساب الإدارة
                   </h2>
-                  <p className="text-sm text-slate-600 leading-relaxed">
+                  <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
                     يمكنك تفعيل اشتراكات الطلاب أو التحكم في الكورسات والحصص من لوحة الإدارة.
                   </p>
                   <div className="flex flex-wrap items-center justify-center gap-3">
@@ -964,19 +1115,19 @@ export default function App() {
                         setAdminTab('students');
                         navigateTo('supervisor');
                       }}
-                      className="px-5 py-2.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 cursor-pointer"
+                      className="px-5 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
                     >
                       تفعيل اشتراكات الطلاب
                     </button>
                   </div>
                 </div>
               ) : subscribedCourses.length === 0 ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-10 text-center space-y-4">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 p-10 text-center space-y-4">
                   <BookOpen className="w-9 h-9 text-slate-400 mx-auto" />
-                  <h2 className="text-lg font-bold text-slate-900">
+                  <h2 className="text-lg font-bold text-slate-900 dark:text-white">
                     لا توجد اشتراكات مفعلة في حسابك حتى الآن
                   </h2>
-                  <p className="text-sm text-slate-600">
+                  <p className="text-sm text-slate-600 dark:text-slate-400">
                     تصفح كورسات {session.studentGrade} وتواصل مع الإدارة لتفعيل اشتراكاتك مع المدرسين.
                   </p>
                   <button
@@ -1003,10 +1154,10 @@ export default function App() {
                     return (
                       <article
                         key={course.id}
-                        className="bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between"
+                        className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col justify-between"
                       >
                         <div>
-                          <div className="aspect-[4/3] bg-slate-100 border-b border-slate-200 overflow-hidden">
+                          <div className="aspect-[4/3] bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 overflow-hidden">
                             <ResilientImage
                               src={course.image}
                               alt={course.title}
@@ -1016,8 +1167,8 @@ export default function App() {
                           </div>
 
                           <div className="p-5 space-y-3">
-                            <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-                              <div className="w-10 h-10 rounded-full overflow-hidden border border-slate-200 bg-slate-100 shrink-0">
+                            <div className="flex items-center gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+                              <div className="w-10 h-10 rounded-full overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 shrink-0">
                                 <ResilientImage
                                   src={inst.image}
                                   alt={inst.name}
@@ -1026,31 +1177,31 @@ export default function App() {
                                 />
                               </div>
                               <div className="min-w-0">
-                                <div className="text-xs font-bold text-slate-900 truncate">
+                                <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
                                   {inst.name}
                                 </div>
-                                <div className="text-xs text-blue-700 truncate">
+                                <div className="text-xs text-blue-700 dark:text-blue-400 truncate">
                                   {inst.subject}
                                 </div>
                               </div>
                             </div>
 
-                            <h3 className="text-base font-bold text-slate-900 leading-snug">
+                            <h3 className="text-base font-bold text-slate-900 dark:text-white leading-snug">
                               {course.title}
                             </h3>
 
                             <div className="space-y-1.5">
-                              <div className="flex items-center justify-between text-xs text-slate-600 tabular-nums">
+                              <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400 tabular-nums">
                                 <span>
                                   {doneCount} من {lessons.length} حصص
                                 </span>
-                                <span className="font-mono font-semibold text-blue-700">
+                                <span className="font-mono font-semibold text-blue-700 dark:text-blue-400">
                                   {pct}%
                                 </span>
                               </div>
-                              <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                              <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                                 <div
-                                  className="h-full bg-blue-700"
+                                  className="h-full bg-blue-700 dark:bg-blue-500"
                                   style={{ width: `${pct}%` }}
                                 />
                               </div>
@@ -1076,26 +1227,26 @@ export default function App() {
             </div>
           </section>
         ) : view === 'courses' ? (
-          <section className="py-12 lg:py-16 bg-white min-h-[75vh]">
+          <section className="py-12 lg:py-16 bg-white dark:bg-slate-950 min-h-[75vh]">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
-              <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 pb-6 border-b border-slate-200">
+              <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 pb-6 border-b border-slate-200 dark:border-slate-800">
                 <div className="space-y-2">
                   <button
                     type="button"
                     onClick={() => navigateTo('home')}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 hover:text-blue-900"
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 dark:text-blue-400 hover:text-blue-900 dark:hover:text-blue-300"
                   >
                     <ArrowRight className="w-4 h-4" />
                     <span>العودة للرئيسية</span>
                   </button>
-                  <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">
+                  <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">
                     {isStudentLoggedIn
                       ? `كورسات ${session.studentGrade}`
                       : selectedInstructorId === 'الكل'
                         ? 'جميع كورسات المنصة'
                         : `كورسات ${resolveInstructorName(selectedInstructorId)}`}
                   </h1>
-                  <p className="text-sm text-slate-600">
+                  <p className="text-sm text-slate-600 dark:text-slate-400">
                     {isStudentLoggedIn
                       ? `تظهر هنا الكورسات المخصصة لمرحلتك الدراسية (${session.studentGrade}) فقط.`
                       : 'اختر المرحلة الدراسية أو المدرس لتصفح الكورسات المتاحة.'}
@@ -1111,7 +1262,7 @@ export default function App() {
                       onChange={(e) => setSearchQuery(e.target.value)}
                       placeholder="ابحث عن كورس أو مادة..."
                       aria-label="ابحث عن كورس"
-                      className="w-full sm:w-64 pr-10 pl-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                      className="w-full sm:w-64 pr-10 pl-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                     />
                   </div>
 
@@ -1122,7 +1273,7 @@ export default function App() {
                       onChange={(e) =>
                         setSelectedGrade(e.target.value as 'كل المراحل' | GradeStage)
                       }
-                      className="px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                      className="px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                     >
                       {GRADE_FILTERS.map((g) => (
                         <option key={g} value={g}>
@@ -1136,7 +1287,7 @@ export default function App() {
                     aria-label="تصفية حسب المدرس"
                     value={selectedInstructorId}
                     onChange={(e) => setSelectedInstructorId(e.target.value)}
-                    className="px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                    className="px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                   >
                     <option value="الكل">جميع المدرسين</option>
                     {teachers.map((t) => (
@@ -1158,7 +1309,7 @@ export default function App() {
               <div
                 role="tablist"
                 aria-label="تصفية الكورسات حسب المسار"
-                className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-lg overflow-x-auto"
+                className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800 rounded-lg overflow-x-auto"
               >
                 {CATEGORIES.map((category) => (
                   <button
@@ -1169,8 +1320,8 @@ export default function App() {
                     onClick={() => setSelectedCategory(category)}
                     className={`px-3.5 py-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                       selectedCategory === category
-                        ? 'bg-white text-slate-900 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
+                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                     }`}
                   >
                     {category}
@@ -1179,12 +1330,12 @@ export default function App() {
               </div>
 
               {filteredCourses.length === 0 ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-10 text-center space-y-3">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 p-10 text-center space-y-3">
                   <BookOpen className="w-8 h-8 text-slate-400 mx-auto" />
-                  <h3 className="text-base font-bold text-slate-900">
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
                     لا توجد كورسات مضافة لهذه المرحلة حاليًا
                   </h3>
-                  <p className="text-sm text-slate-600">
+                  <p className="text-sm text-slate-600 dark:text-slate-400">
                     {isStudentLoggedIn
                       ? `لم يتم نشر كورسات إضافية لـ ${session.studentGrade} بهذه التصفية بعد.`
                       : 'جرّب تغيير المدرس أو المرحلة الدراسية أو إعادة تعيين الفلاتر.'}
@@ -1216,10 +1367,10 @@ export default function App() {
                     return (
                       <article
                         key={course.id}
-                        className="bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between transition-colors hover:border-slate-300"
+                        className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col justify-between transition-colors hover:border-slate-300 dark:hover:border-slate-700"
                       >
                         <div>
-                          <div className="aspect-[4/3] bg-slate-100 border-b border-slate-200 overflow-hidden">
+                          <div className="aspect-[4/3] bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 overflow-hidden">
                             <ResilientImage
                               src={course.image}
                               alt={course.title}
@@ -1229,8 +1380,8 @@ export default function App() {
                           </div>
 
                           <div className="p-6 space-y-3">
-                            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                              <span className="font-medium text-blue-700">{course.grade}</span>
+                            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                              <span className="font-medium text-blue-700 dark:text-blue-400">{course.grade}</span>
                               <span aria-hidden="true">·</span>
                               <span>
                                 {normalizeSubjectCategory(course.category) || course.category}
@@ -1245,20 +1396,20 @@ export default function App() {
                               <span className="tabular-nums">{totalLessons} حصص</span>
                             </div>
 
-                            <h3 className="text-lg font-bold text-slate-900 leading-snug">
+                            <h3 className="text-lg font-bold text-slate-900 dark:text-white leading-snug">
                               {course.title}
                             </h3>
                           </div>
                         </div>
 
                         <div className="px-6 pb-6 pt-2 space-y-4">
-                          <div className="flex items-center justify-between gap-2 text-xs pt-3 border-t border-slate-100">
+                          <div className="flex items-center justify-between gap-2 text-xs pt-3 border-t border-slate-100 dark:border-slate-800">
                             <button
                               type="button"
                               onClick={() => openTeacherCourses(course.instructorId)}
-                              className="flex items-center gap-2 min-w-0 text-right hover:text-blue-700 transition-colors cursor-pointer"
+                              className="flex items-center gap-2 min-w-0 text-right hover:text-blue-700 dark:hover:text-blue-400 transition-colors cursor-pointer"
                             >
-                              <div className="w-7 h-7 rounded-full overflow-hidden border border-slate-200 bg-slate-100 shrink-0">
+                              <div className="w-7 h-7 rounded-full overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 shrink-0">
                                 <ResilientImage
                                   src={inst.image}
                                   alt={inst.name}
@@ -1266,11 +1417,11 @@ export default function App() {
                                   className="w-full h-full object-cover object-top"
                                 />
                               </div>
-                              <span className="text-slate-700 font-semibold truncate">
+                              <span className="text-slate-700 dark:text-slate-300 font-semibold truncate">
                                 {inst.name}
                               </span>
                             </button>
-                            <span className="font-bold text-slate-900 tabular-nums shrink-0">
+                            <span className="font-bold text-slate-900 dark:text-white tabular-nums shrink-0">
                               {course.priceEgp} ج.م / الشهر
                             </span>
                           </div>
@@ -1282,7 +1433,7 @@ export default function App() {
                               className={`flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
                                 isUnlocked
                                   ? 'bg-blue-700 text-white hover:bg-blue-800'
-                                  : 'bg-slate-900 text-white hover:bg-slate-800'
+                                  : 'bg-slate-900 dark:bg-slate-800 text-white hover:bg-slate-800 dark:hover:bg-slate-700'
                               }`}
                             >
                               {!isUnlocked && <Lock className="w-3.5 h-3.5" />}
@@ -1321,22 +1472,22 @@ export default function App() {
           </section>
         ) : (
           <>
-            <section className="bg-white border-b border-slate-200">
+            <section className="bg-white dark:bg-slate-900/70 border-b border-slate-200 dark:border-slate-800">
               <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 lg:py-20">
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-stretch">
                   <div className="lg:col-span-6 flex flex-col justify-center space-y-6">
-                    <div className="text-xs font-medium text-blue-700">
+                    <div className="text-xs font-medium text-blue-700 dark:text-blue-400">
                       منصة التعليم الثانوي المتكاملة · أونلاين
                     </div>
 
                     <h1
                       dir="ltr"
-                      className="font-display text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-slate-900 leading-tight w-fit"
+                      className="font-display text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-slate-900 dark:text-white leading-tight w-fit"
                     >
-                      Ezz <span className="text-blue-700">Academy</span>
+                      Ezz <span className="text-blue-700 dark:text-blue-400">Academy</span>
                     </h1>
 
-                    <p className="text-base sm:text-lg text-slate-600 leading-relaxed max-w-xl">
+                    <p className="text-base sm:text-lg text-slate-600 dark:text-slate-300 leading-relaxed max-w-xl">
                       منصة متخصصة لطلاب المرحلة الثانوية والبكالوريا؛ شرح منهجي، وكورسات مخصصة لكل مرحلة دراسية.
                     </p>
 
@@ -1360,7 +1511,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={handleHeaderPrimaryClick}
-                        className="inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold text-slate-800 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors whitespace-nowrap cursor-pointer"
+                        className="inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800 border border-transparent dark:border-slate-700 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors whitespace-nowrap cursor-pointer"
                       >
                         <span>{headerPrimaryLabel}</span>
                       </button>
@@ -1368,7 +1519,7 @@ export default function App() {
                   </div>
 
                   <div className="lg:col-span-6">
-                    <div className="h-full min-h-[280px] lg:min-h-[380px] rounded-xl overflow-hidden border border-slate-200 bg-slate-100">
+                    <div className="h-full min-h-[280px] lg:min-h-[380px] rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900">
                       <ResilientImage
                         src={HERO_IMAGE}
                         alt="قاعة دراسة حديثة لمنصة Ezz Academy"
@@ -1381,14 +1532,14 @@ export default function App() {
               </div>
             </section>
 
-            <section className="py-14 lg:py-16 bg-slate-50">
+            <section className="py-14 lg:py-16 bg-slate-50 dark:bg-slate-950">
               <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div>
-                    <h2 className="text-xl sm:text-2xl font-bold text-slate-900">
+                    <h2 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white">
                       الهيئة التدريسية في Ezz Academy
                     </h2>
-                    <p className="text-xs sm:text-sm text-slate-600 mt-1">
+                    <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
                       تصفح المدرسين يمينًا ويسارًا واختر المدرس لعرض كورسات مرحلتك الدراسية.
                     </p>
                   </div>
@@ -1412,7 +1563,7 @@ export default function App() {
                       type="button"
                       onClick={() => scrollTeachers('right')}
                       aria-label="تمرير لليمين"
-                      className="p-2.5 bg-white border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                      className="p-2.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
                     >
                       <ChevronRight className="w-4 h-4" />
                     </button>
@@ -1420,7 +1571,7 @@ export default function App() {
                       type="button"
                       onClick={() => scrollTeachers('left')}
                       aria-label="تمرير لليسار"
-                      className="p-2.5 bg-white border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                      className="p-2.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
                     >
                       <ChevronLeft className="w-4 h-4" />
                     </button>
@@ -1428,8 +1579,8 @@ export default function App() {
                 </div>
 
                 {teachers.length === 0 ? (
-                  <div className="bg-white rounded-xl border border-slate-200 p-10 text-center space-y-3">
-                    <p className="text-sm text-slate-600">
+                  <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-10 text-center space-y-3">
+                    <p className="text-sm text-slate-600 dark:text-slate-400">
                       سيتم عرض المدرسين وموادهم الدراسية هنا فور إضافتهم.
                     </p>
                     {session.role === 'supervisor' && (
@@ -1454,10 +1605,10 @@ export default function App() {
                     {teachers.map((teacher) => (
                       <article
                         key={teacher.id}
-                        className="min-w-[270px] sm:min-w-[300px] max-w-[300px] shrink-0 snap-start bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between transition-colors hover:border-slate-300"
+                        className="min-w-[270px] sm:min-w-[300px] max-w-[300px] shrink-0 snap-start bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col justify-between transition-colors hover:border-slate-300 dark:hover:border-slate-700"
                       >
                         <div>
-                          <div className="aspect-[4/3] bg-slate-100 border-b border-slate-200 overflow-hidden">
+                          <div className="aspect-[4/3] bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 overflow-hidden">
                             <ResilientImage
                               src={teacher.image}
                               alt={teacher.name}
@@ -1467,21 +1618,21 @@ export default function App() {
                           </div>
 
                           <div className="p-5 space-y-2">
-                            <div className="text-xs font-semibold text-blue-700">
+                            <div className="text-xs font-semibold text-blue-700 dark:text-blue-400">
                               مدرس مادة: {teacher.subject}
                             </div>
-                            <h3 className="text-lg font-bold text-slate-900">{teacher.name}</h3>
-                            <p className="text-xs text-slate-500">
+                            <h3 className="text-lg font-bold text-slate-900 dark:text-white">{teacher.name}</h3>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">
                               {teacher.grades.join(' · ')}
                             </p>
                           </div>
                         </div>
 
-                        <div className="px-5 pb-5 pt-2 border-t border-slate-100">
+                        <div className="px-5 pb-5 pt-2 border-t border-slate-100 dark:border-slate-800">
                           <button
                             type="button"
                             onClick={() => openTeacherCourses(teacher.id)}
-                            className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer"
+                            className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-slate-900 dark:bg-slate-800 rounded-lg hover:bg-blue-700 dark:hover:bg-blue-700 transition-colors cursor-pointer"
                           >
                             <span>
                               {isStudentLoggedIn
@@ -1501,14 +1652,14 @@ export default function App() {
         )}
       </main>
 
-      <footer className="bg-white border-t border-slate-200 py-8 no-print">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
-          <div className="font-display font-bold text-sm text-slate-900">Ezz Academy</div>
+      <footer className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 py-8 no-print">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500 dark:text-slate-400">
+          <div className="font-display font-bold text-sm text-slate-900 dark:text-white">Ezz Academy</div>
           <div className="flex flex-wrap items-center gap-6">
             <button
               type="button"
               onClick={() => navigateTo('home')}
-              className="hover:text-slate-900 transition-colors"
+              className="hover:text-slate-900 dark:hover:text-white transition-colors"
             >
               الرئيسية
             </button>
@@ -1518,14 +1669,14 @@ export default function App() {
                 setSelectedInstructorId('الكل');
                 navigateTo('courses');
               }}
-              className="hover:text-slate-900 transition-colors"
+              className="hover:text-slate-900 dark:hover:text-white transition-colors"
             >
               الكورسات
             </button>
             <button
               type="button"
               onClick={() => navigateTo('subscriptions')}
-              className="hover:text-slate-900 transition-colors"
+              className="hover:text-slate-900 dark:hover:text-white transition-colors"
             >
               اشتراكاتي مع المدرسين
             </button>
@@ -1544,26 +1695,26 @@ export default function App() {
 
       {showWalletModal && session.role === 'student' && (
         <div
-          className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 p-3 sm:p-4 backdrop-blur-xs"
+          className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/75 p-3 sm:p-4 backdrop-blur-xs"
           role="dialog"
           aria-modal="true"
           aria-labelledby="student-wallet-title"
         >
           <div className="min-h-full flex items-center justify-center py-4">
-            <div className="bg-white rounded-xl border border-slate-200 max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-5">
-              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200">
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-5">
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
                 <div className="flex items-center gap-2.5">
-                  <div className="p-2.5 rounded-lg bg-blue-50 text-blue-700 shrink-0">
+                  <div className="p-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 shrink-0">
                     <Wallet className="w-5 h-5" />
                   </div>
                   <div>
                     <h3
                       id="student-wallet-title"
-                      className="text-base sm:text-lg font-bold text-slate-900"
+                      className="text-base sm:text-lg font-bold text-slate-900 dark:text-white"
                     >
                       محفظة حسابي
                     </h3>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
                       شراء وتفعيل كورسات {session.studentGrade} من رصيد المحفظة
                     </p>
                   </div>
@@ -1572,20 +1723,20 @@ export default function App() {
                   type="button"
                   onClick={() => setShowWalletModal(false)}
                   aria-label="إغلاق"
-                  className="p-2 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 shrink-0"
+                  className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-4 flex items-center justify-between gap-3">
+              <div className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 p-4 flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-xs text-slate-600">الرصيد المتاح في محفظتك</div>
-                  <div className="text-2xl font-bold text-blue-900 font-mono tabular-nums mt-0.5">
+                  <div className="text-xs text-slate-600 dark:text-slate-400">الرصيد المتاح في محفظتك</div>
+                  <div className="text-2xl font-bold text-blue-900 dark:text-blue-200 font-mono tabular-nums mt-0.5">
                     {session.walletBalance} ج.م
                   </div>
                 </div>
-                <div className="text-xs text-blue-800 max-w-[200px] leading-relaxed">
+                <div className="text-xs text-blue-800 dark:text-blue-300 max-w-[200px] leading-relaxed">
                   يتم شحن الرصيد عبر إدارة المنصة لشراء الكورسات الخاصة بك.
                 </div>
               </div>
@@ -1594,19 +1745,19 @@ export default function App() {
                 <div
                   className={`p-3 rounded-lg border text-xs font-semibold flex items-center gap-2 ${
                     purchaseFeedback.type === 'ok'
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                      : 'bg-red-50 border-red-200 text-red-900'
+                      ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                      : 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-red-900 dark:text-red-200'
                   }`}
                 >
                   {purchaseFeedback.type === 'ok' && (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                    <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
                   )}
                   <span>{purchaseFeedback.text}</span>
                 </div>
               )}
 
               <div className="space-y-2.5">
-                <div className="text-xs font-bold text-slate-800">
+                <div className="text-xs font-bold text-slate-800 dark:text-slate-200">
                   كورسات {session.studentGrade}
                 </div>
                 <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
@@ -1619,23 +1770,23 @@ export default function App() {
                       return (
                         <div
                           key={course.id}
-                          className="p-3 rounded-xl border border-slate-200 bg-slate-50/60 flex flex-wrap items-center justify-between gap-3"
+                          className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/50 flex flex-wrap items-center justify-between gap-3"
                         >
                           <div className="min-w-0 flex-1">
-                            <div className="text-sm font-bold text-slate-900 truncate">
+                            <div className="text-sm font-bold text-slate-900 dark:text-white truncate">
                               {course.title}
                             </div>
-                            <div className="text-xs text-slate-500 mt-0.5">
+                            <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                               {teacherName} ·{' '}
-                              <span className="font-bold text-slate-800 tabular-nums">
+                              <span className="font-bold text-slate-800 dark:text-slate-200 tabular-nums">
                                 {course.priceEgp} ج.م
                               </span>
                             </div>
                           </div>
 
                           {unlocked ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg shrink-0">
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-lg shrink-0">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
                               <span>مُفعّل</span>
                             </span>
                           ) : (
@@ -1663,26 +1814,26 @@ export default function App() {
 
       {showNotificationsModal && session.role === 'student' && (
         <div
-          className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 p-3 sm:p-4 backdrop-blur-xs"
+          className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/75 p-3 sm:p-4 backdrop-blur-xs"
           role="dialog"
           aria-modal="true"
           aria-labelledby="student-notifications-title"
         >
           <div className="min-h-full flex items-center justify-center py-4">
-            <div className="bg-white rounded-xl border border-slate-200 max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-5">
-              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200">
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-5">
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
                 <div className="flex items-center gap-2.5">
-                  <div className="p-2.5 rounded-lg bg-amber-50 text-amber-700 shrink-0">
+                  <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400 shrink-0">
                     <Bell className="w-5 h-5" />
                   </div>
                   <div>
                     <h3
                       id="student-notifications-title"
-                      className="text-base sm:text-lg font-bold text-slate-900"
+                      className="text-base sm:text-lg font-bold text-slate-900 dark:text-white"
                     >
                       التنبيهات والإشعارات
                     </h3>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
                       رسائل وتنبيهات المتابعة المرسلة لك من إدارة المنصة
                     </p>
                   </div>
@@ -1691,14 +1842,26 @@ export default function App() {
                   type="button"
                   onClick={() => setShowNotificationsModal(false)}
                   aria-label="إغلاق"
-                  className="p-2 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 shrink-0"
+                  className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
+              {session.activeDeviceIds.length >= 2 && !session.autoBlockExempt && (
+                <div className="p-3.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 space-y-1.5">
+                  <div className="flex items-center gap-2 text-sm font-bold text-amber-900 dark:text-amber-200">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span>إنذار الحظر التلقائي — تعدد الأجهزة</span>
+                  </div>
+                  <p className="text-xs text-amber-900 dark:text-amber-200/90 leading-relaxed">
+                    حسابك مفتوح حاليًا على {session.activeDeviceIds.length} أجهزة. يُسمح بحد أقصى جهازين فقط، وعند محاولة الفتح من جهاز ثالث سيتم حظر الحساب تلقائيًا لحماية بياناتك واشتراكاتك.
+                  </p>
+                </div>
+              )}
+
               {session.notifications.length === 0 ? (
-                <div className="py-8 text-center text-sm text-slate-500">
+                <div className="py-8 text-center text-sm text-slate-500 dark:text-slate-400">
                   لا توجد تنبيهات مرسلة لحسابك حتى الآن.
                 </div>
               ) : (
@@ -1708,7 +1871,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => void handleMarkNotificationsRead()}
-                        className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:underline cursor-pointer"
+                        className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
                       >
                         <CheckCircle2 className="w-3.5 h-3.5" />
                         <span>تحديد الكل كمقروء</span>
@@ -1722,19 +1885,19 @@ export default function App() {
                         key={notif.id}
                         className={`p-3.5 rounded-xl border space-y-1.5 ${
                           notif.read
-                            ? 'bg-slate-50 border-slate-200'
-                            : 'bg-amber-50 border-amber-300'
+                            ? 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700'
+                            : 'bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-700'
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm font-bold text-slate-900">
+                          <span className="text-sm font-bold text-slate-900 dark:text-white">
                             {notif.title}
                           </span>
-                          <span className="text-[11px] text-slate-500 tabular-nums shrink-0">
+                          <span className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums shrink-0">
                             {new Date(notif.createdAt).toLocaleDateString('ar-EG')}
                           </span>
                         </div>
-                        <p className="text-xs sm:text-sm text-slate-700 leading-relaxed">
+                        <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
                           {notif.message}
                         </p>
                         {!notif.read && (
@@ -1742,7 +1905,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => void handleMarkNotificationsRead([notif.id])}
-                              className="text-xs font-semibold text-amber-900 hover:underline cursor-pointer"
+                              className="text-xs font-semibold text-amber-900 dark:text-amber-300 hover:underline cursor-pointer"
                             >
                               تم الاطلاع
                             </button>

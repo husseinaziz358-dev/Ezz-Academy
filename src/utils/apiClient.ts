@@ -6,6 +6,7 @@ import {
 } from '../types/student';
 import { Course, COURSES, normalizeSubjectCategory } from '../data/academyData';
 import { computeStudentAttendance } from './attendance';
+import { getClientDeviceInfo, mergeStudentDeviceEntry } from './deviceInfo';
 
 const FALLBACK_DB_KEY = 'ezz_academy_students_fallback_v2';
 const FALLBACK_CATALOG_KEY = 'ezz_academy_catalog_v1';
@@ -165,6 +166,58 @@ function saveLocalStudents(list: (StudentRecord & { passwordHash?: string })[]) 
   }
 }
 
+function applyLocalAutoBlockPolicy(
+  student: StudentRecord & { passwordHash?: string },
+  activeDeviceIds: string[]
+): StudentRecord & { passwordHash?: string } {
+  if (student.autoBlockExempt) return student;
+  const existingNotifs = Array.isArray(student.notifications) ? student.notifications : [];
+  if (activeDeviceIds.length >= 3) {
+    const alreadyNotif = existingNotifs.some((n) => n.id.startsWith('autoblk-lock-'));
+    const nextNotifs = alreadyNotif
+      ? existingNotifs
+      : [
+          {
+            id: `autoblk-lock-${Date.now()}`,
+            title: 'تم حظر الحساب تلقائيًا',
+            message:
+              'تم حظر حسابك تلقائيًا بسبب فتحه من 3 أجهزة أو أكثر. تواصل مع المشرف لإيقاف الحظر.',
+            read: false,
+            createdAt: new Date().toISOString(),
+          },
+          ...existingNotifs,
+        ].slice(0, 30);
+    return {
+      ...student,
+      isBlocked: true,
+      blockReason:
+        student.blockReason ||
+        'تم حظر الحساب تلقائيًا لتجاوز الحد المسموح للأجهزة (٣ أجهزة أو أكثر).',
+      notifications: nextNotifs,
+    };
+  }
+  if (activeDeviceIds.length === 2) {
+    const tag = `warn-autoblk-${activeDeviceIds[1].slice(0, 24)}`;
+    if (!existingNotifs.some((n) => n.id.startsWith(tag))) {
+      return {
+        ...student,
+        notifications: [
+          {
+            id: `${tag}-${Date.now()}`,
+            title: 'إنذار الحظر التلقائي — تعدد الأجهزة',
+            message:
+              'تم رصد فتح حسابك من جهاز ثانٍ. يُسمح بحد أقصى جهازين، وفي حالة الدخول من جهاز ثالث سيتم حظر حسابك تلقائيًا لحماية اشتراكاتك.',
+            read: false,
+            createdAt: new Date().toISOString(),
+          },
+          ...existingNotifs,
+        ].slice(0, 30),
+      };
+    }
+  }
+  return student;
+}
+
 async function tryServerJson<T>(
   url: string,
   options?: RequestInit
@@ -190,6 +243,7 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
 > {
   const phone = normalizeDigits(phoneInput);
   const deviceId = getOrCreateDeviceId();
+  const deviceInfo = getClientDeviceInfo(deviceId);
   const serverRes = await tryServerJson<{
     role?: 'supervisor' | 'student';
     name?: string;
@@ -200,7 +254,7 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
   }>('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ phone, password, deviceId }),
+    body: JSON.stringify({ phone, password, deviceId, deviceInfo }),
   });
 
   if (serverRes) {
@@ -257,15 +311,36 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
     return { ok: false, error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' };
   }
   if (student.isBlocked) {
-    return { ok: false, error: 'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.' };
-  }
-  const curDevices = Array.isArray(student.activeDeviceIds) ? student.activeDeviceIds : [];
-  if (!curDevices.includes(deviceId)) {
-    list[idx] = {
-      ...student,
-      activeDeviceIds: [...curDevices, deviceId].slice(0, 20),
+    return {
+      ok: false,
+      error:
+        student.blockReason ||
+        'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.',
     };
-    saveLocalStudents(list);
+  }
+  const mergedDevices = mergeStudentDeviceEntry(
+    student.activeDeviceIds,
+    student.deviceDetails,
+    deviceId,
+    deviceInfo
+  );
+  const afterPolicy = applyLocalAutoBlockPolicy(
+    {
+      ...student,
+      activeDeviceIds: mergedDevices.activeDeviceIds,
+      deviceDetails: mergedDevices.deviceDetails,
+    },
+    mergedDevices.activeDeviceIds
+  );
+  list[idx] = afterPolicy;
+  saveLocalStudents(list);
+  if (afterPolicy.isBlocked) {
+    return {
+      ok: false,
+      error:
+        afterPolicy.blockReason ||
+        'تم حظر هذا الحساب تلقائيًا لتجاوز الحد المسموح للأجهزة. تواصل مع المشرف لإيقاف الحظر.',
+    };
   }
   const { passwordHash: _ignored, ...safeStudent } = list[idx];
   return {
@@ -290,11 +365,13 @@ export async function apiRegisterStudent(payload: {
   | { ok: false; error: string }
 > {
   const deviceId = getOrCreateDeviceId();
+  const deviceInfo = getClientDeviceInfo(deviceId);
   const normalizedPayload = {
     ...payload,
     studentPhone: normalizeDigits(payload.studentPhone),
     parentPhone: normalizeDigits(payload.parentPhone),
     deviceId,
+    deviceInfo,
   };
 
   const serverRes = await tryServerJson<{
@@ -352,6 +429,7 @@ export async function apiRegisterStudent(payload: {
     walletBalance: 0,
     isBlocked: false,
     activeDeviceIds: [deviceId],
+    deviceDetails: { [deviceId]: deviceInfo },
     createdAt: now,
     updatedAt: now,
   };
@@ -401,6 +479,8 @@ export async function apiUpdateSupervisorStudent(
     walletBalance?: number;
     addWalletAmount?: number;
     isBlocked?: boolean;
+    autoBlockExempt?: boolean;
+    blockReason?: string;
     resetDevices?: boolean;
   }
 ): Promise<{ ok: true; student: StudentRecord } | { ok: false; error: string }> {
@@ -444,15 +524,27 @@ export async function apiUpdateSupervisorStudent(
   if (typeof updates.addWalletAmount === 'number' && Number.isFinite(updates.addWalletAmount)) {
     nextWallet = Math.max(0, Math.round(nextWallet + updates.addWalletAmount));
   }
+  const nextBlocked =
+    typeof updates.isBlocked === 'boolean' ? updates.isBlocked : Boolean(list[idx].isBlocked);
+  const nextDevices = updates.resetDevices ? [] : list[idx].activeDeviceIds ?? [];
+  const nextAutoBlockExempt =
+    typeof updates.autoBlockExempt === 'boolean'
+      ? updates.autoBlockExempt
+      : Boolean(list[idx].autoBlockExempt) ||
+        (list[idx].isBlocked === true && nextBlocked === false && nextDevices.length >= 3);
   const updated = {
     ...list[idx],
     supervisorNotes: updates.supervisorNotes ?? list[idx].supervisorNotes,
     unlockedCourseIds: nextUnlocked,
     attendanceRate: autoAttendance.rate,
     walletBalance: nextWallet,
-    isBlocked:
-      typeof updates.isBlocked === 'boolean' ? updates.isBlocked : Boolean(list[idx].isBlocked),
-    activeDeviceIds: updates.resetDevices ? [] : list[idx].activeDeviceIds ?? [],
+    isBlocked: nextBlocked,
+    autoBlockExempt: nextAutoBlockExempt,
+    blockReason: nextBlocked
+      ? updates.blockReason ?? list[idx].blockReason ?? 'تم حظر الحساب من قِبل الإدارة.'
+      : '',
+    activeDeviceIds: nextDevices,
+    deviceDetails: updates.resetDevices ? {} : list[idx].deviceDetails ?? {},
     updatedAt: new Date().toISOString(),
   };
   list[idx] = updated;
@@ -474,6 +566,7 @@ export async function apiSyncStudentProgress(
   }
 ): Promise<void> {
   const deviceId = getOrCreateDeviceId();
+  const deviceInfo = getClientDeviceInfo(deviceId);
   const serverRes = await tryServerJson<{ student?: StudentRecord }>(
     `/api/students/${studentId}/progress`,
     {
@@ -482,7 +575,7 @@ export async function apiSyncStudentProgress(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ ...updates, deviceId }),
+      body: JSON.stringify({ ...updates, deviceId, deviceInfo }),
     }
   );
 
@@ -501,13 +594,24 @@ export async function apiSyncStudentProgress(
     },
     merged
   );
-  list[idx] = {
-    ...list[idx],
-    ...updates,
-    attendanceRate: updates.attendanceRate ?? autoAttendance.rate,
-    attendanceDates: updates.attendanceDates ?? list[idx].attendanceDates ?? {},
-    updatedAt: new Date().toISOString(),
-  };
+  const mergedDevices = mergeStudentDeviceEntry(
+    list[idx].activeDeviceIds,
+    list[idx].deviceDetails,
+    deviceId,
+    deviceInfo
+  );
+  list[idx] = applyLocalAutoBlockPolicy(
+    {
+      ...list[idx],
+      ...updates,
+      attendanceRate: updates.attendanceRate ?? autoAttendance.rate,
+      attendanceDates: updates.attendanceDates ?? list[idx].attendanceDates ?? {},
+      activeDeviceIds: mergedDevices.activeDeviceIds,
+      deviceDetails: mergedDevices.deviceDetails,
+      updatedAt: new Date().toISOString(),
+    },
+    mergedDevices.activeDeviceIds
+  );
   saveLocalStudents(list);
 }
 
@@ -516,8 +620,15 @@ export async function apiFetchStudentProfile(
   token: string
 ): Promise<StudentRecord | null> {
   const deviceId = getOrCreateDeviceId();
+  const deviceInfo = getClientDeviceInfo(deviceId);
+  const params = new URLSearchParams({
+    deviceId,
+    deviceBrowser: deviceInfo.browser,
+    deviceOs: deviceInfo.os,
+    deviceType: deviceInfo.deviceType,
+  });
   const serverRes = await tryServerJson<{ student?: StudentRecord }>(
-    `/api/students/${studentId}/me?deviceId=${encodeURIComponent(deviceId)}`,
+    `/api/students/${studentId}/me?${params.toString()}`,
     {
       headers: { Authorization: `Bearer ${token}` },
     }
@@ -525,9 +636,25 @@ export async function apiFetchStudentProfile(
   if (serverRes?.ok && serverRes.data.student) {
     return serverRes.data.student;
   }
-  const found = getLocalStudents().find((s) => s.id === studentId);
-  if (!found) return null;
-  const { passwordHash: _ignored, ...safeStudent } = found;
+  const list = getLocalStudents();
+  const foundIdx = list.findIndex((s) => s.id === studentId);
+  if (foundIdx === -1) return null;
+  const mergedDevices = mergeStudentDeviceEntry(
+    list[foundIdx].activeDeviceIds,
+    list[foundIdx].deviceDetails,
+    deviceId,
+    deviceInfo
+  );
+  list[foundIdx] = applyLocalAutoBlockPolicy(
+    {
+      ...list[foundIdx],
+      activeDeviceIds: mergedDevices.activeDeviceIds,
+      deviceDetails: mergedDevices.deviceDetails,
+    },
+    mergedDevices.activeDeviceIds
+  );
+  saveLocalStudents(list);
+  const { passwordHash: _ignored, ...safeStudent } = list[foundIdx];
   return safeStudent;
 }
 
@@ -1028,4 +1155,42 @@ export async function apiDeleteCourse(token: string, courseId: string): Promise<
   }
   saveLocalCatalog(catalog);
   return true;
+}
+
+export async function apiDeleteCoursesBatch(
+  token: string,
+  courseIds: string[]
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (courseIds.length === 0) return { ok: true };
+  const serverRes = await tryServerJson<{ ok?: boolean; error?: string }>(
+    '/api/supervisor/courses/delete-batch',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ courseIds }),
+    }
+  );
+  if (serverRes) {
+    if (!serverRes.ok) {
+      return {
+        ok: false,
+        error: serverRes.data.error || 'تعذر حفظ تغييرات حذف الكورسات.',
+      };
+    }
+    return { ok: true };
+  }
+
+  const idSet = new Set(courseIds);
+  const catalog = getLocalCatalog();
+  catalog.customCourses = catalog.customCourses.filter((c) => !idSet.has(c.id));
+  for (const c of COURSES) {
+    if (idSet.has(c.id) && !catalog.deletedCourseIds.includes(c.id)) {
+      catalog.deletedCourseIds.push(c.id);
+    }
+  }
+  saveLocalCatalog(catalog);
+  return { ok: true };
 }

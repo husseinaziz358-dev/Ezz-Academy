@@ -14,6 +14,7 @@ import {
   FilePlus2,
   FileText,
   Film,
+  Globe,
   GraduationCap,
   HelpCircle,
   ImagePlus,
@@ -27,6 +28,8 @@ import {
   Search,
   Send,
   ShieldCheck,
+  Smartphone,
+  Tablet,
   Trash2,
   Upload,
   Users,
@@ -55,7 +58,7 @@ import {
 import {
   apiAddCourse,
   apiAddTeacher,
-  apiDeleteCourse,
+  apiDeleteCoursesBatch,
   apiDeleteTeacher,
   apiFetchSupervisorStudents,
   apiSendSupervisorAlerts,
@@ -74,6 +77,7 @@ import {
   sendFirebaseStudentAlerts,
   updateFirebaseStudentBySupervisor,
 } from '../services/firebaseStudents';
+import { getStudentDevicesDisplay, NormalizedDeviceDisplay } from '../utils/deviceInfo';
 import { ResilientImage } from './ResilientImage';
 
 export type AdminTab = 'students' | 'low-attendance' | 'teachers' | 'courses';
@@ -209,14 +213,18 @@ export function SupervisorDashboard({
   const [errorMsg, setErrorMsg] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [stageFilter, setStageFilter] = useState<string>('جميع المراحل');
+  const [multiDeviceOnly, setMultiDeviceOnly] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<StudentRecord | null>(null);
 
   const [editWalletAdd, setEditWalletAdd] = useState('');
   const [editBlocked, setEditBlocked] = useState(false);
+  const [editAutoBlockExempt, setEditAutoBlockExempt] = useState(false);
   const [editDevicesCount, setEditDevicesCount] = useState(0);
   const [resetDevicesFlag, setResetDevicesFlag] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [instantActionLoading, setInstantActionLoading] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [followUpActionNotice, setFollowUpActionNotice] = useState('');
 
   // Low-attendance alert composer state
   const [alertTargets, setAlertTargets] = useState<StudentRecord[] | null>(null);
@@ -250,6 +258,12 @@ export function SupervisorDashboard({
   const [courseImage, setCourseImage] = useState('');
   const [courseSaving, setCourseSaving] = useState(false);
   const [courseFeedback, setCourseFeedback] = useState('');
+  const [pendingDeleteCourseIds, setPendingDeleteCourseIds] = useState<string[]>([]);
+  const [deletingCoursesSaving, setDeletingCoursesSaving] = useState(false);
+  const [coursesActionNotice, setCoursesActionNotice] = useState<{
+    type: 'ok' | 'error';
+    text: string;
+  } | null>(null);
 
   // Full Course & Lesson Content Editor state
   const [editingCourse, setEditingCourse] = useState<Course | null>(null);
@@ -327,10 +341,24 @@ export function SupervisorDashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, token]);
 
+  const multiDeviceStudentsCount = useMemo(
+    () => students.filter((s) => getStudentDevicesDisplay(s).length > 1).length,
+    [students]
+  );
+
   const filteredStudents = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return students.filter((s) => {
+      const devices = getStudentDevicesDisplay(s);
+      if (multiDeviceOnly && devices.length <= 1) return false;
       const matchesStage = stageFilter === 'جميع المراحل' || s.stage === stageFilter;
+      const matchesDevice = devices.some(
+        (d) =>
+          d.browser.toLowerCase().includes(q) ||
+          d.os.toLowerCase().includes(q) ||
+          d.deviceType.includes(q) ||
+          d.label.toLowerCase().includes(q)
+      );
       const matchesQuery =
         !q ||
         s.studentName.toLowerCase().includes(q) ||
@@ -338,18 +366,30 @@ export function SupervisorDashboard({
         s.parentName.toLowerCase().includes(q) ||
         s.parentPhone.includes(q) ||
         s.motherName.toLowerCase().includes(q) ||
-        s.specialization.toLowerCase().includes(q);
+        s.specialization.toLowerCase().includes(q) ||
+        matchesDevice;
       return matchesStage && matchesQuery;
     });
-  }, [students, searchQuery, stageFilter]);
+  }, [students, searchQuery, stageFilter, multiDeviceOnly]);
+
+  const renderDeviceIcon = (
+    deviceType: NormalizedDeviceDisplay['deviceType'],
+    className = 'w-3.5 h-3.5 shrink-0'
+  ) => {
+    if (deviceType === 'موبايل') return <Smartphone className={className} />;
+    if (deviceType === 'تابلت') return <Tablet className={className} />;
+    return <Laptop className={className} />;
+  };
 
   const openStudentFollowUp = (student: StudentRecord) => {
     setSelectedStudent(student);
     setEditWalletAdd('');
     setEditBlocked(Boolean(student.isBlocked));
-    setEditDevicesCount(student.activeDeviceIds?.length ?? 0);
+    setEditAutoBlockExempt(Boolean(student.autoBlockExempt));
+    setEditDevicesCount(getStudentDevicesDisplay(student).length);
     setResetDevicesFlag(false);
     setSavedNotice(false);
+    setFollowUpActionNotice('');
   };
 
   const handleSaveFollowUp = async (e: React.FormEvent) => {
@@ -357,22 +397,30 @@ export function SupervisorDashboard({
     if (!selectedStudent) return;
     setSaving(true);
     setSavedNotice(false);
+    setFollowUpActionNotice('');
     const addAmount = Math.max(0, Math.round(Number(editWalletAdd) || 0));
     const currentWallet = Math.max(0, Number(selectedStudent.walletBalance) || 0);
     const nextBalance = Math.min(1000000, currentWallet + addAmount);
+    const devicesCount = getStudentDevicesDisplay(selectedStudent).length;
+    const effectiveExempt =
+      !editBlocked && !resetDevicesFlag && devicesCount >= 3 ? true : editAutoBlockExempt;
     try {
       if (token === 'firebase-google-session') {
         const updated = await updateFirebaseStudentBySupervisor(selectedStudent.id, {
           walletBalance: nextBalance,
           isBlocked: editBlocked,
-          ...(resetDevicesFlag ? { activeDeviceIds: [] } : {}),
+          autoBlockExempt: effectiveExempt,
+          ...(editBlocked ? {} : { blockReason: '' }),
+          ...(resetDevicesFlag ? { activeDeviceIds: [], deviceDetails: {} } : {}),
         });
         setStudents((prev) =>
           prev.map((s) => (s.id === updated.id ? updated : s))
         );
         setSelectedStudent(updated);
         setEditWalletAdd('');
-        setEditDevicesCount(updated.activeDeviceIds?.length ?? 0);
+        setEditBlocked(Boolean(updated.isBlocked));
+        setEditAutoBlockExempt(Boolean(updated.autoBlockExempt));
+        setEditDevicesCount(getStudentDevicesDisplay(updated).length);
         setResetDevicesFlag(false);
         setSavedNotice(true);
         return;
@@ -381,6 +429,8 @@ export function SupervisorDashboard({
       const result = await apiUpdateSupervisorStudent(selectedStudent.id, token, {
         walletBalance: nextBalance,
         isBlocked: editBlocked,
+        autoBlockExempt: effectiveExempt,
+        ...(editBlocked ? {} : { blockReason: '' }),
         resetDevices: resetDevicesFlag,
       });
       if (result.ok) {
@@ -389,12 +439,108 @@ export function SupervisorDashboard({
         );
         setSelectedStudent(result.student);
         setEditWalletAdd('');
-        setEditDevicesCount(result.student.activeDeviceIds?.length ?? 0);
+        setEditBlocked(Boolean(result.student.isBlocked));
+        setEditAutoBlockExempt(Boolean(result.student.autoBlockExempt));
+        setEditDevicesCount(getStudentDevicesDisplay(result.student).length);
         setResetDevicesFlag(false);
         setSavedNotice(true);
       }
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleToggleBlockImmediate = async (targetBlocked: boolean) => {
+    if (!selectedStudent || instantActionLoading) return;
+    setInstantActionLoading(true);
+    setSavedNotice(false);
+    setFollowUpActionNotice('');
+    const devicesCount = getStudentDevicesDisplay(selectedStudent).length;
+    const shouldEnableExempt =
+      !targetBlocked && !resetDevicesFlag && devicesCount >= 3
+        ? true
+        : editAutoBlockExempt;
+    try {
+      if (token === 'firebase-google-session') {
+        const updated = await updateFirebaseStudentBySupervisor(selectedStudent.id, {
+          isBlocked: targetBlocked,
+          autoBlockExempt: shouldEnableExempt,
+          ...(targetBlocked ? {} : { blockReason: '' }),
+        });
+        setStudents((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+        setSelectedStudent(updated);
+        setEditBlocked(Boolean(updated.isBlocked));
+        setEditAutoBlockExempt(Boolean(updated.autoBlockExempt));
+        setFollowUpActionNotice(
+          targetBlocked
+            ? 'تم حظر الحساب بنجاح.'
+            : 'تم إيقاف الحظر عن الطالب وتفعيل الحساب بنجاح.'
+        );
+        return;
+      }
+
+      const result = await apiUpdateSupervisorStudent(selectedStudent.id, token, {
+        isBlocked: targetBlocked,
+        autoBlockExempt: shouldEnableExempt,
+        ...(targetBlocked ? {} : { blockReason: '' }),
+      });
+      if (result.ok) {
+        setStudents((prev) =>
+          prev.map((s) => (s.id === result.student.id ? result.student : s))
+        );
+        setSelectedStudent(result.student);
+        setEditBlocked(Boolean(result.student.isBlocked));
+        setEditAutoBlockExempt(Boolean(result.student.autoBlockExempt));
+        setFollowUpActionNotice(
+          targetBlocked
+            ? 'تم حظر الحساب بنجاح.'
+            : 'تم إيقاف الحظر عن الطالب وتفعيل الحساب بنجاح.'
+        );
+      }
+    } finally {
+      setInstantActionLoading(false);
+    }
+  };
+
+  const handleToggleAutoBlockExemptImmediate = async () => {
+    if (!selectedStudent || instantActionLoading) return;
+    const nextExempt = !editAutoBlockExempt;
+    setInstantActionLoading(true);
+    setSavedNotice(false);
+    setFollowUpActionNotice('');
+    try {
+      if (token === 'firebase-google-session') {
+        const updated = await updateFirebaseStudentBySupervisor(selectedStudent.id, {
+          autoBlockExempt: nextExempt,
+        });
+        setStudents((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+        setSelectedStudent(updated);
+        setEditAutoBlockExempt(Boolean(updated.autoBlockExempt));
+        setFollowUpActionNotice(
+          nextExempt
+            ? 'تم إيقاف الحظر التلقائي لهذا الحساب.'
+            : 'تم إعادة تفعيل الحظر التلقائي عند تعدد الأجهزة.'
+        );
+        return;
+      }
+
+      const result = await apiUpdateSupervisorStudent(selectedStudent.id, token, {
+        autoBlockExempt: nextExempt,
+      });
+      if (result.ok) {
+        setStudents((prev) =>
+          prev.map((s) => (s.id === result.student.id ? result.student : s))
+        );
+        setSelectedStudent(result.student);
+        setEditAutoBlockExempt(Boolean(result.student.autoBlockExempt));
+        setFollowUpActionNotice(
+          nextExempt
+            ? 'تم إيقاف الحظر التلقائي لهذا الحساب.'
+            : 'تم إعادة تفعيل الحظر التلقائي عند تعدد الأجهزة.'
+        );
+      }
+    } finally {
+      setInstantActionLoading(false);
     }
   };
 
@@ -525,13 +671,35 @@ export function SupervisorDashboard({
     }
   };
 
-  const handleDeleteCourse = async (courseId: string) => {
-    const ok = await apiDeleteCourse(token, courseId);
-    if (ok) {
-      if (editingCourse?.id === courseId) {
+  const handleTogglePendingDeleteCourse = (courseId: string) => {
+    setCoursesActionNotice(null);
+    setPendingDeleteCourseIds((prev) =>
+      prev.includes(courseId) ? prev.filter((id) => id !== courseId) : [...prev, courseId]
+    );
+  };
+
+  const handleSaveCourseDeletions = async () => {
+    if (pendingDeleteCourseIds.length === 0 || deletingCoursesSaving) return;
+    setDeletingCoursesSaving(true);
+    setCoursesActionNotice(null);
+    try {
+      const res = await apiDeleteCoursesBatch(token, pendingDeleteCourseIds);
+      if (!res.ok) {
+        setCoursesActionNotice({ type: 'error', text: res.error });
+        return;
+      }
+      if (editingCourse && pendingDeleteCourseIds.includes(editingCourse.id)) {
         setEditingCourse(null);
       }
+      const deletedCount = pendingDeleteCourseIds.length;
+      setPendingDeleteCourseIds([]);
       await onCatalogUpdated();
+      setCoursesActionNotice({
+        type: 'ok',
+        text: `تم حفظ التغييرات وحذف ${deletedCount} ${deletedCount === 1 ? 'كورس' : 'كورسات'} بنجاح.`,
+      });
+    } finally {
+      setDeletingCoursesSaving(false);
     }
   };
 
@@ -950,16 +1118,16 @@ export function SupervisorDashboard({
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10 space-y-8 overflow-x-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-4 pb-6 border-b border-slate-200">
+      <div className="flex flex-wrap items-center justify-between gap-4 pb-6 border-b border-slate-200 dark:border-slate-800">
         <div className="min-w-0">
-          <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 mb-1">
+          <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 dark:text-blue-400 mb-1">
             <ShieldCheck className="w-4 h-4 shrink-0" />
             <span className="truncate">إدارة المنصة · {supervisorPhone}</span>
           </div>
-          <h1 className="text-xl sm:text-3xl font-bold text-slate-900">
+          <h1 className="text-xl sm:text-3xl font-bold text-slate-900 dark:text-white">
             إدارة المدرسين والكورسات ومتابعة الطلاب
           </h1>
-          <p className="text-xs sm:text-sm text-slate-600 mt-1">
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
             مرحباً {supervisorName} — أضف المدرسين، تحكم في الكورسات والحصص والفيديوهات والملفات والامتحانات، وتابع الطلاب.
           </p>
         </div>
@@ -967,7 +1135,7 @@ export function SupervisorDashboard({
         <button
           type="button"
           onClick={onLogout}
-          className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
+          className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
         >
           <LogOut className="w-4 h-4" />
           <span>تسجيل الخروج</span>
@@ -975,23 +1143,23 @@ export function SupervisorDashboard({
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-5">
-        <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5">
-          <div className="text-xs text-slate-500 mb-1.5">إجمالي الطلاب المسجلين</div>
-          <div className="text-xl sm:text-2xl font-bold text-slate-900 tabular-nums">{students.length}</div>
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5">
+          <div className="text-xs text-slate-500 dark:text-slate-400 mb-1.5">إجمالي الطلاب المسجلين</div>
+          <div className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white tabular-nums">{students.length}</div>
         </div>
-        <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5">
-          <div className="text-xs text-slate-500 mb-1.5">طلاب الثانوي / البكالوريا</div>
-          <div className="text-xl sm:text-2xl font-bold text-slate-900 tabular-nums">
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5">
+          <div className="text-xs text-slate-500 dark:text-slate-400 mb-1.5">طلاب الثانوي / البكالوريا</div>
+          <div className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
             {secCount} / {bacCount}
           </div>
         </div>
-        <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5">
-          <div className="text-xs text-slate-500 mb-1.5">المدرسون المضافون</div>
-          <div className="text-xl sm:text-2xl font-bold text-slate-900 tabular-nums">{teachers.length}</div>
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5">
+          <div className="text-xs text-slate-500 dark:text-slate-400 mb-1.5">المدرسون المضافون</div>
+          <div className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white tabular-nums">{teachers.length}</div>
         </div>
-        <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5">
-          <div className="text-xs text-slate-500 mb-1.5">إجمالي الكورسات</div>
-          <div className="text-xl sm:text-2xl font-bold text-slate-900 tabular-nums">
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5">
+          <div className="text-xs text-slate-500 dark:text-slate-400 mb-1.5">إجمالي الكورسات</div>
+          <div className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
             {allCourses.length}
           </div>
         </div>
@@ -1000,7 +1168,7 @@ export function SupervisorDashboard({
       <div
         role="tablist"
         aria-label="أقسام الإدارة"
-        className="flex items-center gap-1.5 p-1 bg-slate-200/70 rounded-lg overflow-x-auto max-w-full"
+        className="flex items-center gap-1.5 p-1 bg-slate-200/70 dark:bg-slate-900 border border-transparent dark:border-slate-800 rounded-lg overflow-x-auto max-w-full"
       >
         <button
           type="button"
@@ -1012,8 +1180,8 @@ export function SupervisorDashboard({
           }}
           className={`inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'students'
-              ? 'bg-white text-slate-900 shadow-xs'
-              : 'text-slate-600 hover:text-slate-900'
+              ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
           }`}
         >
           <Users className="w-4 h-4" />
@@ -1030,14 +1198,14 @@ export function SupervisorDashboard({
           }}
           className={`inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'low-attendance'
-              ? 'bg-white text-slate-900 shadow-xs'
-              : 'text-slate-600 hover:text-slate-900'
+              ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
           }`}
         >
           <AlertTriangle className="w-4 h-4 text-amber-600" />
           <span>نسبة الحضور &lt; 50%</span>
           {lowAttendanceRows.length > 0 && (
-            <span className="px-1.5 py-0.5 text-[11px] font-bold bg-amber-100 text-amber-800 rounded-md tabular-nums">
+            <span className="px-1.5 py-0.5 text-[11px] font-bold bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300 rounded-md tabular-nums">
               {lowAttendanceRows.length}
             </span>
           )}
@@ -1053,8 +1221,8 @@ export function SupervisorDashboard({
           }}
           className={`inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'teachers'
-              ? 'bg-white text-slate-900 shadow-xs'
-              : 'text-slate-600 hover:text-slate-900'
+              ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
           }`}
         >
           <GraduationCap className="w-4 h-4" />
@@ -1068,8 +1236,8 @@ export function SupervisorDashboard({
           onClick={() => setActiveTab('courses')}
           className={`inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'courses'
-              ? 'bg-white text-slate-900 shadow-xs'
-              : 'text-slate-600 hover:text-slate-900'
+              ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
           }`}
         >
           <BookOpen className="w-4 h-4" />
@@ -1081,17 +1249,17 @@ export function SupervisorDashboard({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           <form
             onSubmit={handleAddTeacherSubmit}
-            className="lg:col-span-5 bg-white rounded-xl border border-slate-200 p-5 sm:p-6 space-y-4 min-w-0"
+            className="lg:col-span-5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-4 min-w-0"
           >
-            <h2 className="text-base font-bold text-slate-900">إضافة مدرس جديد</h2>
-            <p className="text-xs text-slate-500">
+            <h2 className="text-base font-bold text-slate-900 dark:text-white">إضافة مدرس جديد</h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
               يظهر المدرس مباشرة في شريط التمرير بالصفحة الأولى للمنصة.
             </p>
 
             <div>
               <label
                 htmlFor="teacher-name-input"
-                className="block text-xs font-semibold text-slate-700 mb-1"
+                className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
               >
                 اسم المدرس
               </label>
@@ -1102,14 +1270,14 @@ export function SupervisorDashboard({
                 value={teacherName}
                 onChange={(e) => setTeacherName(e.target.value)}
                 placeholder="مثال: أ. أحمد محمود"
-                className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               />
             </div>
 
             <div>
               <label
                 htmlFor="teacher-subject-select"
-                className="block text-xs font-semibold text-slate-700 mb-1"
+                className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
               >
                 المادة الدراسية
               </label>
@@ -1117,7 +1285,7 @@ export function SupervisorDashboard({
                 id="teacher-subject-select"
                 value={teacherSubject}
                 onChange={(e) => setTeacherSubject(e.target.value)}
-                className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               >
                 {PLATFORM_SUBJECTS.map((subj) => (
                   <option key={subj} value={subj}>
@@ -1128,12 +1296,12 @@ export function SupervisorDashboard({
             </div>
 
             <div>
-              <span className="block text-xs font-semibold text-slate-700 mb-1.5">
+              <span className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
                 صورة المدرس
               </span>
               <div className="flex flex-wrap items-center gap-3">
-                <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-800 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 cursor-pointer">
-                  <ImagePlus className="w-4 h-4 text-blue-700" />
+                <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer">
+                  <ImagePlus className="w-4 h-4 text-blue-700 dark:text-blue-400" />
                   <span>رفع صورة من الجهاز</span>
                   <input
                     type="file"
@@ -1146,7 +1314,7 @@ export function SupervisorDashboard({
                   <button
                     type="button"
                     onClick={() => setTeacherImage('')}
-                    className="text-xs text-red-700 hover:underline"
+                    className="text-xs text-red-700 dark:text-red-300 hover:underline"
                   >
                     إزالة الصورة
                   </button>
@@ -1158,10 +1326,10 @@ export function SupervisorDashboard({
                 value={teacherImage.startsWith('data:') ? '' : teacherImage}
                 onChange={(e) => setTeacherImage(e.target.value)}
                 placeholder="أو الصق رابط الصورة مباشرة (https://...)"
-                className="mt-2 w-full px-3.5 py-2 text-xs font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="mt-2 w-full px-3.5 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               />
               {teacherImage && (
-                <div className="mt-3 w-28 aspect-[4/3] rounded-lg overflow-hidden border border-slate-200 bg-slate-100">
+                <div className="mt-3 w-28 aspect-[4/3] rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800">
                   <img
                     src={teacherImage}
                     alt="معاينة صورة المدرس"
@@ -1172,7 +1340,7 @@ export function SupervisorDashboard({
             </div>
 
             <div>
-              <span className="block text-xs font-semibold text-slate-700 mb-2">
+              <span className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2">
                 المراحل التي يدرسها
               </span>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -1185,8 +1353,8 @@ export function SupervisorDashboard({
                       onClick={() => toggleTeacherGrade(stage)}
                       className={`px-3 py-2 text-xs rounded-lg border text-right transition-colors cursor-pointer ${
                         selected
-                          ? 'bg-blue-50 border-blue-300 text-blue-900 font-semibold'
-                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                          ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-300 dark:border-blue-700 text-blue-900 dark:text-blue-200 font-semibold'
+                          : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50'
                       }`}
                     >
                       {stage}
@@ -1197,7 +1365,7 @@ export function SupervisorDashboard({
             </div>
 
             {teacherFeedback && (
-              <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs font-medium text-blue-900">
+              <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-xs font-medium text-blue-900 dark:text-blue-200">
                 {teacherFeedback}
               </div>
             )}
@@ -1212,18 +1380,18 @@ export function SupervisorDashboard({
             </button>
           </form>
 
-          <div className="lg:col-span-7 bg-white rounded-xl border border-slate-200 p-5 sm:p-6 space-y-4 min-w-0">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
-              <h2 className="text-base font-bold text-slate-900">
+          <div className="lg:col-span-7 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-4 min-w-0">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <h2 className="text-base font-bold text-slate-900 dark:text-white">
                 المدرسون الحاليون في الصفحة الأولى
               </h2>
-              <span className="text-xs text-slate-500 tabular-nums">
+              <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
                 {teachers.length} مدرس
               </span>
             </div>
 
             {teachers.length === 0 ? (
-              <div className="p-8 text-center text-sm text-slate-500">
+              <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
                 لم تقم بإضافة مدرسين بعد. استخدم النموذج لإضافة أول مدرس بصورته واسمه ومادته.
               </div>
             ) : (
@@ -1235,10 +1403,10 @@ export function SupervisorDashboard({
                   return (
                     <div
                       key={t.id}
-                      className="rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between bg-slate-50/40"
+                      className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col justify-between bg-slate-50/40 dark:bg-slate-800/40"
                     >
                       <div>
-                        <div className="aspect-[4/3] bg-slate-100 border-b border-slate-200 overflow-hidden">
+                        <div className="aspect-[4/3] bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 overflow-hidden">
                           <ResilientImage
                             src={t.image}
                             alt={t.name}
@@ -1247,12 +1415,12 @@ export function SupervisorDashboard({
                           />
                         </div>
                         <div className="p-4 space-y-1.5">
-                          <h3 className="text-base font-bold text-slate-900">{t.name}</h3>
-                          <div className="text-xs font-semibold text-blue-700">
+                          <h3 className="text-base font-bold text-slate-900 dark:text-white">{t.name}</h3>
+                          <div className="text-xs font-semibold text-blue-700 dark:text-blue-400">
                             مدرس مادة: {t.subject}
                           </div>
-                          <div className="text-xs text-slate-500">{t.grades.join(' · ')}</div>
-                          <div className="text-xs font-medium text-slate-700 tabular-nums">
+                          <div className="text-xs text-slate-500 dark:text-slate-400">{t.grades.join(' · ')}</div>
+                          <div className="text-xs font-medium text-slate-700 dark:text-slate-300 tabular-nums">
                             {linkedCount} كورس مربوط بالمدرس
                           </div>
                         </div>
@@ -1267,7 +1435,7 @@ export function SupervisorDashboard({
                             setActiveTab('courses');
                             setEditingCourse(null);
                           }}
-                          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer"
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 dark:bg-slate-800 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer"
                         >
                           <Plus className="w-3.5 h-3.5" />
                           <span>إضافة كورس له</span>
@@ -1275,7 +1443,7 @@ export function SupervisorDashboard({
                         <button
                           type="button"
                           onClick={() => handleDeleteTeacher(t.id)}
-                          className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors cursor-pointer"
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 transition-colors cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                           <span>حذف</span>
@@ -1294,14 +1462,14 @@ export function SupervisorDashboard({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           <form
             onSubmit={handleAddCourseSubmit}
-            className="lg:col-span-5 bg-white rounded-xl border border-slate-200 p-5 sm:p-6 space-y-4 min-w-0"
+            className="lg:col-span-5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-4 min-w-0"
           >
-            <h2 className="text-base font-bold text-slate-900">إضافة كورس جديد</h2>
+            <h2 className="text-base font-bold text-slate-900 dark:text-white">إضافة كورس جديد</h2>
 
             <div>
               <label
                 htmlFor="course-grade-select"
-                className="block text-xs font-semibold text-slate-700 mb-1"
+                className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
               >
                 السنة الدراسية
               </label>
@@ -1309,7 +1477,7 @@ export function SupervisorDashboard({
                 id="course-grade-select"
                 value={courseGrade}
                 onChange={(e) => setCourseGrade(e.target.value as EducationalStage)}
-                className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               >
                 {EDUCATIONAL_STAGES.map((st) => (
                   <option key={st} value={st}>
@@ -1322,7 +1490,7 @@ export function SupervisorDashboard({
             <div>
               <label
                 htmlFor="course-teacher-select"
-                className="block text-xs font-semibold text-slate-700 mb-1"
+                className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
               >
                 المدرس المسئول عن الكورس
               </label>
@@ -1338,7 +1506,7 @@ export function SupervisorDashboard({
                     if (norm) setCourseCategory(norm);
                   }
                 }}
-                className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               >
                 {teachers.length === 0 ? (
                   <option value="">أضف مدرسًا أولًا من تبويب إدارة المدرسين</option>
@@ -1355,7 +1523,7 @@ export function SupervisorDashboard({
             <div>
               <label
                 htmlFor="course-subject-select"
-                className="block text-xs font-semibold text-slate-700 mb-1"
+                className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
               >
                 المادة
               </label>
@@ -1363,7 +1531,7 @@ export function SupervisorDashboard({
                 id="course-subject-select"
                 value={courseCategory}
                 onChange={(e) => setCourseCategory(e.target.value)}
-                className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               >
                 {PLATFORM_SUBJECTS.map((subj) => (
                   <option key={subj} value={subj}>
@@ -1376,7 +1544,7 @@ export function SupervisorDashboard({
             <div>
               <label
                 htmlFor="course-title-input"
-                className="block text-xs font-semibold text-slate-700 mb-1"
+                className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
               >
                 اسم الكورس
               </label>
@@ -1387,14 +1555,14 @@ export function SupervisorDashboard({
                 value={courseTitle}
                 onChange={(e) => setCourseTitle(e.target.value)}
                 placeholder="مثال: الباب الأول — التفاضل وتطبيقاته"
-                className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               />
             </div>
 
             <div>
               <label
                 htmlFor="course-price-input"
-                className="block text-xs font-semibold text-slate-700 mb-1"
+                className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
               >
                 سعر الكورس (ج.م)
               </label>
@@ -1405,17 +1573,17 @@ export function SupervisorDashboard({
                 required
                 value={coursePrice}
                 onChange={(e) => setCoursePrice(e.target.value)}
-                className="w-full px-3.5 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="w-full px-3.5 py-2 text-sm font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                 صورة الكورس
               </label>
               <div className="space-y-2.5">
-                <label className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2.5 text-xs font-semibold text-slate-800 bg-slate-50 border border-dashed border-slate-300 rounded-lg hover:bg-slate-100 cursor-pointer transition-colors">
-                  <ImagePlus className="w-4 h-4 text-blue-700" />
+                <label className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-200 bg-slate-50 dark:bg-slate-800/80 border border-dashed border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors">
+                  <ImagePlus className="w-4 h-4 text-blue-700 dark:text-blue-400" />
                   <span>
                     {uploadingKey === 'new-course-img'
                       ? 'جاري رفع صورة الكورس...'
@@ -1435,16 +1603,16 @@ export function SupervisorDashboard({
                   />
                 </label>
                 {courseImage && (
-                  <div className="flex items-center gap-3 p-2 rounded-lg bg-slate-50 border border-slate-200">
+                  <div className="flex items-center gap-3 p-2 rounded-lg bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800">
                     <img
                       src={courseImage}
                       alt="معاينة صورة الكورس"
-                      className="w-20 h-14 object-cover rounded-md border border-slate-200 bg-white shrink-0"
+                      className="w-20 h-14 object-cover rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0"
                     />
                     <button
                       type="button"
                       onClick={() => setCourseImage('')}
-                      className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 hover:underline cursor-pointer"
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-300 hover:underline cursor-pointer"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                       <span>إزالة الصورة</span>
@@ -1455,7 +1623,7 @@ export function SupervisorDashboard({
             </div>
 
             {courseFeedback && (
-              <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs font-medium text-blue-900">
+              <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-xs font-medium text-blue-900 dark:text-blue-200">
                 {courseFeedback}
               </div>
             )}
@@ -1470,32 +1638,85 @@ export function SupervisorDashboard({
             </button>
           </form>
 
-          <div className="lg:col-span-7 bg-white rounded-xl border border-slate-200 p-5 sm:p-6 space-y-4 min-w-0">
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200">
+          <div className="lg:col-span-7 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-4 min-w-0">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200 dark:border-slate-800">
               <div>
-                <h2 className="text-base font-bold text-slate-900">
+                <h2 className="text-base font-bold text-slate-900 dark:text-white">
                   التحكم في الكورسات والحصص
                 </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  اضغط «التحكم في الحصص والمحتوى» لتعديل ترتيب الحصص، إضافة فيديوهات، ملفات، أو امتحان الحصة.
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  حدّد الكورسات المراد حذفها بالضغط على «حذف»، ثم اضغط «حفظ التغييرات» لتنفيذ الحذف نهائيًا.
                 </p>
               </div>
-              <span className="text-xs text-slate-500 tabular-nums shrink-0">
+              <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums shrink-0">
                 {allCourses.length} كورس
               </span>
             </div>
+
+            {pendingDeleteCourseIds.length > 0 && (
+              <div className="p-3.5 rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-xs sm:text-sm font-bold text-red-900 dark:text-red-200">
+                  <AlertTriangle className="w-4 h-4 text-red-700 dark:text-red-400 shrink-0" />
+                  <span>
+                    تم تحديد {pendingDeleteCourseIds.length}{' '}
+                    {pendingDeleteCourseIds.length === 1 ? 'كورس' : 'كورسات'} للحذف. اضغط «حفظ التغييرات» لتأكيد الحذف.
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setPendingDeleteCourseIds([])}
+                    disabled={deletingCoursesSaving}
+                    className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    إلغاء التحديد
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveCourseDeletions}
+                    disabled={deletingCoursesSaving}
+                    className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-60 cursor-pointer"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>
+                      {deletingCoursesSaving
+                        ? 'جاري حفظ التغييرات...'
+                        : `حفظ التغييرات (${pendingDeleteCourseIds.length})`}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {coursesActionNotice && (
+              <div
+                className={`p-3 rounded-lg border text-xs font-semibold flex items-center gap-2 ${
+                  coursesActionNotice.type === 'ok'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                    : 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-red-900 dark:text-red-200'
+                }`}
+              >
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{coursesActionNotice.text}</span>
+              </div>
+            )}
 
             <div className="space-y-3">
               {allCourses.map((c) => {
                 const lessonsCount = getCourseAllLessons(c).length;
                 const teacherInfo = resolveTeacherInfo(c.instructorId);
+                const isPendingDelete = pendingDeleteCourseIds.includes(c.id);
                 return (
                   <div
                     key={c.id}
-                    className="p-4 rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-50/50"
+                    className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-colors ${
+                      isPendingDelete
+                        ? 'border-red-300 dark:border-red-800 bg-red-50/70 dark:bg-red-950/30'
+                        : 'border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50'
+                    }`}
                   >
                     <div className="flex items-start gap-3 min-w-0">
-                      <div className="w-12 h-12 rounded-lg overflow-hidden border border-slate-200 bg-slate-100 shrink-0 mt-0.5">
+                      <div className="w-12 h-12 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800 shrink-0 mt-0.5">
                         <ResilientImage
                           src={c.image || teacherInfo.image}
                           alt={c.title}
@@ -1504,16 +1725,29 @@ export function SupervisorDashboard({
                         />
                       </div>
                       <div className="space-y-1 min-w-0">
-                        <div className="text-xs font-semibold text-blue-700">
-                          {c.grade} · {normalizeSubjectCategory(c.category) || c.category} ·{' '}
-                          <span className="tabular-nums">{lessonsCount} حصة</span> ·{' '}
-                          <span className="tabular-nums">{c.priceEgp} ج.م</span>
+                        <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-blue-700 dark:text-blue-400">
+                          <span>
+                            {c.grade} · {normalizeSubjectCategory(c.category) || c.category} ·{' '}
+                            <span className="tabular-nums">{lessonsCount} حصة</span> ·{' '}
+                            <span className="tabular-nums">{c.priceEgp} ج.م</span>
+                          </span>
+                          {isPendingDelete && (
+                            <span className="px-2 py-0.5 text-[10px] font-bold bg-red-100 dark:bg-red-950/80 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 rounded">
+                              سيتم الحذف عند الحفظ
+                            </span>
+                          )}
                         </div>
-                        <h3 className="text-sm font-bold text-slate-900 break-words">
+                        <h3
+                          className={`text-sm font-bold break-words ${
+                            isPendingDelete
+                              ? 'text-red-900 dark:text-red-200 line-through'
+                              : 'text-slate-900 dark:text-white'
+                          }`}
+                        >
                           {c.title}
                         </h3>
-                        <div className="text-xs text-slate-600">
-                          المدرس: <span className="font-semibold text-slate-800">{resolveTeacherLabel(c.instructorId)}</span>
+                        <div className="text-xs text-slate-600 dark:text-slate-400">
+                          المدرس: <span className="font-semibold text-slate-800 dark:text-slate-200">{resolveTeacherLabel(c.instructorId)}</span>
                         </div>
                       </div>
                     </div>
@@ -1521,7 +1755,7 @@ export function SupervisorDashboard({
                       <button
                         type="button"
                         onClick={() => openCourseEditor(c)}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-slate-800 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer"
                       >
                         <Edit3 className="w-3.5 h-3.5" />
                         <span>التحكم في الحصص والمحتوى</span>
@@ -1529,11 +1763,19 @@ export function SupervisorDashboard({
 
                       <button
                         type="button"
-                        onClick={() => handleDeleteCourse(c.id)}
-                        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 cursor-pointer"
+                        onClick={() => handleTogglePendingDeleteCourse(c.id)}
+                        className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                          isPendingDelete
+                            ? 'text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
+                            : 'text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/60'
+                        }`}
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>حذف</span>
+                        {isPendingDelete ? (
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        ) : (
+                          <Trash2 className="w-3.5 h-3.5" />
+                        )}
+                        <span>{isPendingDelete ? 'تراجع' : 'حذف'}</span>
                       </button>
                     </div>
                   </div>
@@ -1546,18 +1788,18 @@ export function SupervisorDashboard({
 
       {activeTab === 'courses' && editingCourse && (
         <div className="space-y-6">
-          <div className="bg-white rounded-xl border border-slate-200 p-5 sm:p-6 space-y-5">
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200">
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-800">
               <div className="space-y-1 min-w-0">
                 <button
                   type="button"
                   onClick={() => setEditingCourse(null)}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:text-blue-900 cursor-pointer"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 dark:text-blue-400 hover:text-blue-900 dark:hover:text-blue-300 cursor-pointer"
                 >
                   <ArrowRight className="w-4 h-4" />
                   <span>العودة إلى قائمة الكورسات</span>
                 </button>
-                <h2 className="text-lg sm:text-xl font-bold text-slate-900 break-words">
+                <h2 className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white break-words">
                   التحكم في محتوى الكورس: {editingCourse.title}
                 </h2>
               </div>
@@ -1574,14 +1816,14 @@ export function SupervisorDashboard({
             </div>
 
             {editorFeedback && (
-              <div className="p-3.5 rounded-lg bg-blue-50 border border-blue-200 text-xs sm:text-sm font-medium text-blue-900">
+              <div className="p-3.5 rounded-lg bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-xs sm:text-sm font-medium text-blue-900 dark:text-blue-200">
                 {editorFeedback}
               </div>
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               <div className="sm:col-span-2 lg:col-span-3">
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   اسم الكورس
                 </label>
                 <input
@@ -1590,12 +1832,12 @@ export function SupervisorDashboard({
                   onChange={(e) =>
                     setEditingCourse({ ...editingCourse, title: e.target.value })
                   }
-                  className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   المدرس المربوط بالكورس
                 </label>
                 <select
@@ -1615,7 +1857,7 @@ export function SupervisorDashboard({
                       image: nextImage,
                     });
                   }}
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 >
                   {teachers.length > 0 && (
                     <optgroup label="المدرسون المضافون">
@@ -1637,7 +1879,7 @@ export function SupervisorDashboard({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   المادة الدراسية
                 </label>
                 <select
@@ -1650,7 +1892,7 @@ export function SupervisorDashboard({
                       category: e.target.value,
                     })
                   }
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 >
                   {PLATFORM_SUBJECTS.map((subj) => (
                     <option key={subj} value={subj}>
@@ -1662,7 +1904,7 @@ export function SupervisorDashboard({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     المرحلة الدراسية
                   </label>
                   <select
@@ -1673,7 +1915,7 @@ export function SupervisorDashboard({
                         grade: e.target.value as EducationalStage,
                       })
                     }
-                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                    className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                   >
                     {EDUCATIONAL_STAGES.map((st) => (
                       <option key={st} value={st}>
@@ -1684,7 +1926,7 @@ export function SupervisorDashboard({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                     السعر (ج.م)
                   </label>
                   <input
@@ -1697,13 +1939,13 @@ export function SupervisorDashboard({
                         priceEgp: Number(e.target.value) || 0,
                       })
                     }
-                    className="w-full px-3 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                    className="w-full px-3 py-2 text-sm font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                   />
                 </div>
               </div>
 
               <div className="sm:col-span-2 lg:col-span-3 pt-1">
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
                   صورة الكورس
                 </label>
                 <div className="flex flex-wrap items-center gap-3">
@@ -1711,11 +1953,11 @@ export function SupervisorDashboard({
                     <img
                       src={editingCourse.image}
                       alt={editingCourse.title}
-                      className="w-24 h-14 object-cover rounded-lg border border-slate-200 bg-slate-100 shrink-0"
+                      className="w-24 h-14 object-cover rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800 shrink-0"
                     />
                   )}
-                  <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-800 bg-slate-50 border border-dashed border-slate-300 rounded-lg hover:bg-slate-100 cursor-pointer transition-colors">
-                    <ImagePlus className="w-4 h-4 text-blue-700" />
+                  <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 bg-slate-50 dark:bg-slate-800/80 border border-dashed border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors">
+                    <ImagePlus className="w-4 h-4 text-blue-700 dark:text-blue-400" />
                     <span>
                       {uploadingKey === 'edit-course-img'
                         ? 'جاري رفع الصورة...'
@@ -1743,17 +1985,17 @@ export function SupervisorDashboard({
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="text-base sm:text-lg font-bold text-slate-900">
+                <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
                   حصص الكورس بالترتيب ({editingLessons.length} حصة)
                 </h3>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-500 dark:text-slate-400">
                   الحصص مرتبة واحدة تحت الأخرى؛ داخل كل حصة يمكنك إضافة عدة فيديوهات (رفع أو لينك)، رفع ملفات، وتعديل امتحان الحصة.
                 </p>
               </div>
               <button
                 type="button"
                 onClick={handleAddNewLesson}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-slate-800 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
                 <span>إضافة حصة جديدة</span>
@@ -1773,10 +2015,10 @@ export function SupervisorDashboard({
                 return (
                   <div
                     key={lesson.id}
-                    className="bg-white rounded-xl border border-slate-200 overflow-hidden"
+                    className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden"
                   >
                     {/* Lesson Header Row */}
-                    <div className="p-4 sm:p-5 bg-slate-50/80 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                    <div className="p-4 sm:p-5 bg-slate-50/80 dark:bg-slate-800/70 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
                       <button
                         type="button"
                         onClick={() =>
@@ -1788,22 +2030,22 @@ export function SupervisorDashboard({
                           {lIdx + 1}
                         </span>
                         <div className="min-w-0 flex-1">
-                          <div className="text-xs font-semibold text-blue-700">
+                          <div className="text-xs font-semibold text-blue-700 dark:text-blue-400">
                             الحصة {lIdx + 1}
                           </div>
-                          <div className="text-sm sm:text-base font-bold text-slate-900 break-words">
+                          <div className="text-sm sm:text-base font-bold text-slate-900 dark:text-white break-words">
                             {lesson.title}
                           </div>
-                          <div className="text-xs text-slate-500 mt-0.5 tabular-nums">
+                          <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
                             {lesson.durationMinutes > 0 ? `${lesson.durationMinutes} دقيقة · ` : ''}
                             {videos.length} فيديو · {attachments.length} ملف ·{' '}
                             {examQuestions.length} سؤال امتحان
                           </div>
                         </div>
                         {isExpanded ? (
-                          <ChevronUp className="w-5 h-5 text-slate-500 shrink-0" />
+                          <ChevronUp className="w-5 h-5 text-slate-500 dark:text-slate-400 shrink-0" />
                         ) : (
-                          <ChevronDown className="w-5 h-5 text-slate-500 shrink-0" />
+                          <ChevronDown className="w-5 h-5 text-slate-500 dark:text-slate-400 shrink-0" />
                         )}
                       </button>
 
@@ -1813,7 +2055,7 @@ export function SupervisorDashboard({
                           disabled={lIdx === 0}
                           onClick={() => handleMoveLesson(lIdx, 'up')}
                           aria-label="نقل الحصة لأعلى"
-                          className="p-2 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 cursor-pointer"
+                          className="p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 cursor-pointer"
                         >
                           <ArrowUp className="w-3.5 h-3.5" />
                         </button>
@@ -1822,7 +2064,7 @@ export function SupervisorDashboard({
                           disabled={lIdx === editingLessons.length - 1}
                           onClick={() => handleMoveLesson(lIdx, 'down')}
                           aria-label="نقل الحصة لأسفل"
-                          className="p-2 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 cursor-pointer"
+                          className="p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 cursor-pointer"
                         >
                           <ArrowDown className="w-3.5 h-3.5" />
                         </button>
@@ -1830,7 +2072,7 @@ export function SupervisorDashboard({
                           type="button"
                           onClick={() => handleDeleteLesson(lesson.id)}
                           aria-label="حذف الحصة"
-                          className="p-2 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 cursor-pointer"
+                          className="p-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/60 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -1842,10 +2084,10 @@ export function SupervisorDashboard({
                         {/* Lesson Title & Auto Duration Note */}
                         <div className="space-y-2">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <label className="block text-xs font-semibold text-slate-700">
+                            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
                               عنوان الحصة
                             </label>
-                            <span className="text-xs text-slate-500 tabular-nums">
+                            <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
                               {lesson.durationMinutes > 0
                                 ? `المدة التلقائية للحصة: ${lesson.durationMinutes} دقيقة`
                                 : 'مدة الحصة تُحسب تلقائيًا من الفيديوهات'}
@@ -1860,20 +2102,20 @@ export function SupervisorDashboard({
                                 title: e.target.value,
                               }))
                             }
-                            className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                            className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                           />
                         </div>
 
                         {/* Section 1: Multiple Videos (Link + Upload) */}
-                        <div className="rounded-xl border border-slate-200 p-4 sm:p-5 space-y-4 bg-slate-50/40">
-                          <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200">
+                        <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 space-y-4 bg-slate-50/40 dark:bg-slate-800/40">
+                          <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
                             <div className="flex items-center gap-2">
-                              <Film className="w-4 h-4 text-blue-700" />
-                              <h4 className="text-sm font-bold text-slate-900">
+                              <Film className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                              <h4 className="text-sm font-bold text-slate-900 dark:text-white">
                                 فيديوهات الحصة ({videos.length})
                               </h4>
                             </div>
-                            <span className="text-xs text-slate-500">
+                            <span className="text-xs text-slate-500 dark:text-slate-400">
                               يمكنك إضافة أكثر من فيديو (رفع أو لينك)
                             </span>
                           </div>
@@ -1883,19 +2125,19 @@ export function SupervisorDashboard({
                               {videos.map((vid, vIdx) => (
                                 <div
                                   key={vid.id}
-                                  className="p-3 rounded-lg bg-white border border-slate-200 flex flex-wrap items-center justify-between gap-3"
+                                  className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3"
                                 >
                                   <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                                    <Video className="w-4 h-4 text-blue-700 shrink-0" />
+                                    <Video className="w-4 h-4 text-blue-700 dark:text-blue-400 shrink-0" />
                                     <div className="min-w-0 flex-1">
-                                      <div className="text-xs sm:text-sm font-bold text-slate-900 break-words">
+                                      <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white break-words">
                                         {vIdx + 1}. {vid.title}{' '}
-                                        <span className="text-xs font-normal text-blue-700">
+                                        <span className="text-xs font-normal text-blue-700 dark:text-blue-400">
                                           ({vid.sourceType === 'upload' ? 'فيديو مرفوع' : 'لينك فيديو'})
                                         </span>
                                       </div>
                                       <div
-                                        className="text-xs font-mono text-slate-500 truncate"
+                                        className="text-xs font-mono text-slate-500 dark:text-slate-400 truncate"
                                         dir="ltr"
                                       >
                                         {vid.url.startsWith('data:')
@@ -1907,7 +2149,7 @@ export function SupervisorDashboard({
                                   <button
                                     type="button"
                                     onClick={() => handleRemoveVideo(lesson.id, vid.id)}
-                                    className="px-2.5 py-1.5 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 shrink-0 cursor-pointer"
+                                    className="px-2.5 py-1.5 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 shrink-0 cursor-pointer"
                                   >
                                     حذف الفيديو
                                   </button>
@@ -1918,9 +2160,9 @@ export function SupervisorDashboard({
 
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             {/* Add Video via Link */}
-                            <div className="p-3.5 rounded-lg bg-white border border-slate-200 space-y-2.5">
-                              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-                                <Link2 className="w-3.5 h-3.5 text-blue-700" />
+                            <div className="p-3.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2.5">
+                              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-200">
+                                <Link2 className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
                                 <span>إضافة لينك فيديو</span>
                               </div>
                               <input
@@ -1933,7 +2175,7 @@ export function SupervisorDashboard({
                                   }))
                                 }
                                 placeholder="عنوان الفيديو (مثال: الجزء الأول — الشرح)"
-                                className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg"
+                                className="w-full px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
                               />
                               <input
                                 type="url"
@@ -1946,7 +2188,7 @@ export function SupervisorDashboard({
                                   }))
                                 }
                                 placeholder="https://youtube.com/watch?v=... أو رابط MP4"
-                                className="w-full px-3 py-1.5 text-xs font-mono bg-slate-50 border border-slate-300 rounded-lg"
+                                className="w-full px-3 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
                               />
                               <button
                                 type="button"
@@ -1959,10 +2201,10 @@ export function SupervisorDashboard({
                             </div>
 
                             {/* Upload Video from Device */}
-                            <div className="p-3.5 rounded-lg bg-white border border-slate-200 space-y-2.5 flex flex-col justify-between">
+                            <div className="p-3.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2.5 flex flex-col justify-between">
                               <div className="space-y-2.5">
-                                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-                                  <Upload className="w-3.5 h-3.5 text-blue-700" />
+                                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-200">
+                                  <Upload className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
                                   <span>رفع فيديو من الجهاز</span>
                                 </div>
                                 <input
@@ -1975,12 +2217,12 @@ export function SupervisorDashboard({
                                     }))
                                   }
                                   placeholder="عنوان الفيديو المرفوع (اختياري)"
-                                  className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg"
+                                  className="w-full px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
                                 />
                               </div>
 
-                              <label className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-900 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 cursor-pointer">
-                                <Upload className="w-3.5 h-3.5 text-blue-700" />
+                              <label className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer">
+                                <Upload className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
                                 <span>
                                   {uploadingKey === `vid-${lesson.id}`
                                     ? 'جاري رفع الفيديو...'
@@ -2003,11 +2245,11 @@ export function SupervisorDashboard({
                         </div>
 
                         {/* Section 2: Lesson Attachments (PDFs / Files for students) */}
-                        <div className="rounded-xl border border-slate-200 p-4 sm:p-5 space-y-4 bg-slate-50/40">
-                          <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200">
+                        <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 space-y-4 bg-slate-50/40 dark:bg-slate-800/40">
+                          <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
                             <div className="flex items-center gap-2">
-                              <FileText className="w-4 h-4 text-blue-700" />
-                              <h4 className="text-sm font-bold text-slate-900">
+                              <FileText className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                              <h4 className="text-sm font-bold text-slate-900 dark:text-white">
                                 ملفات ومذكرات الحصة للطلاب ({attachments.length})
                               </h4>
                             </div>
@@ -2018,14 +2260,14 @@ export function SupervisorDashboard({
                               {attachments.map((att) => (
                                 <div
                                   key={att.id}
-                                  className="p-3 rounded-lg bg-white border border-slate-200 flex flex-wrap items-center justify-between gap-3"
+                                  className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3"
                                 >
                                   <div className="min-w-0 flex-1">
-                                    <div className="text-xs sm:text-sm font-bold text-slate-900 break-words">
+                                    <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white break-words">
                                       {att.title}
                                     </div>
                                     <div
-                                      className="text-xs font-mono text-slate-500 truncate"
+                                      className="text-xs font-mono text-slate-500 dark:text-slate-400 truncate"
                                       dir="ltr"
                                     >
                                       {att.fileName || att.url}
@@ -2036,7 +2278,7 @@ export function SupervisorDashboard({
                                     onClick={() =>
                                       handleRemoveAttachment(lesson.id, att.id)
                                     }
-                                    className="px-2.5 py-1.5 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 shrink-0 cursor-pointer"
+                                    className="px-2.5 py-1.5 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 shrink-0 cursor-pointer"
                                   >
                                     حذف الملف
                                   </button>
@@ -2046,10 +2288,10 @@ export function SupervisorDashboard({
                           )}
 
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="p-3.5 rounded-lg bg-white border border-slate-200 space-y-2.5 flex flex-col justify-between">
+                            <div className="p-3.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2.5 flex flex-col justify-between">
                               <div className="space-y-2.5">
-                                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-                                  <FilePlus2 className="w-3.5 h-3.5 text-blue-700" />
+                                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-200">
+                                  <FilePlus2 className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
                                   <span>رفع ملف للطلاب (PDF / مذكرة / صور)</span>
                                 </div>
                                 <input
@@ -2062,12 +2304,12 @@ export function SupervisorDashboard({
                                     }))
                                   }
                                   placeholder="اسم الملف للطلاب (مثال: ملزمة الشرح PDF)"
-                                  className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg"
+                                  className="w-full px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
                                 />
                               </div>
 
-                              <label className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-900 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 cursor-pointer">
-                                <Upload className="w-3.5 h-3.5 text-blue-700" />
+                              <label className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer">
+                                <Upload className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
                                 <span>
                                   {uploadingKey === `file-${lesson.id}`
                                     ? 'جاري رفع الملف...'
@@ -2087,9 +2329,9 @@ export function SupervisorDashboard({
                               </label>
                             </div>
 
-                            <div className="p-3.5 rounded-lg bg-white border border-slate-200 space-y-2.5">
-                              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-                                <Link2 className="w-3.5 h-3.5 text-blue-700" />
+                            <div className="p-3.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2.5">
+                              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-200">
+                                <Link2 className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
                                 <span>إضافة رابط ملف خارجي (Drive / PDF)</span>
                               </div>
                               <input
@@ -2102,7 +2344,7 @@ export function SupervisorDashboard({
                                   }))
                                 }
                                 placeholder="اسم الملف"
-                                className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg"
+                                className="w-full px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
                               />
                               <input
                                 type="url"
@@ -2115,12 +2357,12 @@ export function SupervisorDashboard({
                                   }))
                                 }
                                 placeholder="https://..."
-                                className="w-full px-3 py-1.5 text-xs font-mono bg-slate-50 border border-slate-300 rounded-lg"
+                                className="w-full px-3 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
                               />
                               <button
                                 type="button"
                                 onClick={() => handleAddAttachmentLink(lesson.id)}
-                                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-blue-700 cursor-pointer"
+                                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-slate-800 rounded-lg hover:bg-blue-700 cursor-pointer"
                               >
                                 <Plus className="w-3.5 h-3.5" />
                                 <span>إضافة رابط الملف</span>
@@ -2130,11 +2372,11 @@ export function SupervisorDashboard({
                         </div>
 
                         {/* Section 3: Lesson Exam Directly Underneath */}
-                        <div className="rounded-xl border border-slate-200 p-4 sm:p-5 space-y-4 bg-slate-50/40">
-                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
+                        <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 space-y-4 bg-slate-50/40 dark:bg-slate-800/40">
+                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
                             <div className="flex items-center gap-2">
-                              <HelpCircle className="w-4 h-4 text-blue-700" />
-                              <h4 className="text-sm font-bold text-slate-900">
+                              <HelpCircle className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                              <h4 className="text-sm font-bold text-slate-900 dark:text-white">
                                 امتحان الحصة ({examQuestions.length} سؤال)
                               </h4>
                             </div>
@@ -2155,10 +2397,10 @@ export function SupervisorDashboard({
                               return (
                                 <div
                                   key={qIdx}
-                                  className="p-4 rounded-lg bg-white border border-slate-200 space-y-3"
+                                  className="p-4 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3"
                                 >
                                   <div className="flex items-center justify-between gap-2">
-                                    <span className="text-xs font-bold text-blue-700 tabular-nums">
+                                    <span className="text-xs font-bold text-blue-700 dark:text-blue-400 tabular-nums">
                                       السؤال {qIdx + 1}
                                     </span>
                                     {examQuestions.length > 1 && (
@@ -2167,7 +2409,7 @@ export function SupervisorDashboard({
                                         onClick={() =>
                                           handleDeleteExamQuestion(lesson.id, qIdx)
                                         }
-                                        className="text-xs font-semibold text-red-700 hover:underline cursor-pointer"
+                                        className="text-xs font-semibold text-red-700 dark:text-red-300 hover:underline cursor-pointer"
                                       >
                                         حذف السؤال
                                       </button>
@@ -2176,8 +2418,8 @@ export function SupervisorDashboard({
 
                                   <div className="space-y-2.5">
                                     <div className="flex flex-wrap items-center gap-2.5">
-                                      <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-900 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 cursor-pointer">
-                                        <ImagePlus className="w-4 h-4 text-blue-700" />
+                                      <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer">
+                                        <ImagePlus className="w-4 h-4 text-blue-700 dark:text-blue-400" />
                                         <span>
                                           {isUploadingImg
                                             ? 'جاري رفع صورة السؤال...'
@@ -2215,7 +2457,7 @@ export function SupervisorDashboard({
                                               })
                                             )
                                           }
-                                          className="px-2.5 py-1.5 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 cursor-pointer"
+                                          className="px-2.5 py-1.5 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 cursor-pointer"
                                         >
                                           إزالة الصورة
                                         </button>
@@ -2223,7 +2465,7 @@ export function SupervisorDashboard({
                                     </div>
 
                                     {q.questionImage && (
-                                      <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+                                      <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/80 overflow-hidden">
                                         <img
                                           src={q.questionImage}
                                           alt={`صورة السؤال ${qIdx + 1}`}
@@ -2237,7 +2479,7 @@ export function SupervisorDashboard({
                                     {q.options.map((opt, oIdx) => (
                                       <div
                                         key={oIdx}
-                                        className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 bg-slate-50"
+                                        className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/80"
                                       >
                                         <input
                                           type="radio"
@@ -2272,7 +2514,7 @@ export function SupervisorDashboard({
                                             )
                                           }
                                           placeholder={`الاختيار ${oIdx + 1}`}
-                                          className="flex-1 min-w-0 bg-white px-2.5 py-1 text-xs border border-slate-200 rounded"
+                                          className="flex-1 min-w-0 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs border border-slate-200 dark:border-slate-800 rounded"
                                         />
                                       </div>
                                     ))}
@@ -2293,7 +2535,7 @@ export function SupervisorDashboard({
               <button
                 type="button"
                 onClick={handleAddNewLesson}
-                className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-slate-900 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 cursor-pointer"
+                className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-slate-900 dark:text-white bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
                 <span>إضافة حصة جديدة تحتها</span>
@@ -2315,7 +2557,7 @@ export function SupervisorDashboard({
 
       {activeTab === 'low-attendance' && (
         <div className="space-y-4">
-          <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
             <div className="relative flex-1 max-w-md">
               <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
@@ -2324,7 +2566,7 @@ export function SupervisorDashboard({
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="ابحث باسم الطالب أو رقم الهاتف..."
                 aria-label="بحث في طلاب الحضور المنخفض"
-                className="w-full pr-10 pl-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="w-full pr-10 pl-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               />
             </div>
 
@@ -2333,7 +2575,7 @@ export function SupervisorDashboard({
                 aria-label="تصفية حسب المرحلة"
                 value={stageFilter}
                 onChange={(e) => setStageFilter(e.target.value)}
-                className="px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               >
                 <option value="جميع المراحل">جميع المراحل</option>
                 {EDUCATIONAL_STAGES.map((st) => (
@@ -2360,59 +2602,59 @@ export function SupervisorDashboard({
             </div>
           </div>
 
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-5 sm:px-6 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+            <div className="px-5 sm:px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber-600" />
-                <h2 className="text-base font-bold text-slate-900">
+                <h2 className="text-base font-bold text-slate-900 dark:text-white">
                   الطلاب أصحاب نسبة حضور أقل من 50%
                 </h2>
               </div>
-              <span className="text-xs text-slate-500 tabular-nums">
+              <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
                 {filteredLowAttendanceRows.length} طالب
               </span>
             </div>
 
             {loading ? (
-              <div className="p-10 text-center text-sm text-slate-500">
+              <div className="p-10 text-center text-sm text-slate-500 dark:text-slate-400">
                 جاري تحميل بيانات الحضور...
               </div>
             ) : filteredLowAttendanceRows.length === 0 ? (
               <div className="p-10 text-center space-y-2">
                 <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto" />
-                <div className="text-sm font-bold text-slate-900">
+                <div className="text-sm font-bold text-slate-900 dark:text-white">
                   لا يوجد طلاب بنسبة حضور أقل من 50% حاليًا
                 </div>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-500 dark:text-slate-400">
                   جميع الطلاب المطابقين للتصفية يحافظون على نسبة حضور 50% فأعلى.
                 </p>
               </div>
             ) : (
-              <div className="divide-y divide-slate-100">
+              <div className="divide-y divide-slate-100 dark:divide-slate-800">
                 {filteredLowAttendanceRows.map(({ student, attendance }) => {
                   const sentNotifs = student.notifications ?? [];
                   const unreadCount = sentNotifs.filter((n) => !n.read).length;
                   return (
                     <div
                       key={student.id}
-                      className="p-4 sm:px-6 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-50/70"
+                      className="p-4 sm:px-6 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-50/70 dark:hover:bg-slate-800/50"
                     >
                       <div className="space-y-1.5 min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-bold text-slate-900">
+                          <span className="text-sm font-bold text-slate-900 dark:text-white">
                             {student.studentName}
                           </span>
-                          <span className="px-2 py-0.5 text-xs font-bold bg-red-50 text-red-700 border border-red-200 rounded tabular-nums">
+                          <span className="px-2 py-0.5 text-xs font-bold bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 rounded tabular-nums">
                             نسبة الحضور: {attendance.rate}%
                           </span>
                           {student.isBlocked && (
-                            <span className="px-2 py-0.5 text-[11px] font-semibold bg-red-100 text-red-700 rounded">
+                            <span className="px-2 py-0.5 text-[11px] font-semibold bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300 rounded">
                               محظور
                             </span>
                           )}
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 dark:text-slate-400">
                           <span className="font-mono tabular-nums" dir="ltr">
                             {student.studentPhone}
                           </span>
@@ -2424,7 +2666,7 @@ export function SupervisorDashboard({
                           </span>
                         </div>
 
-                        <div className="w-full max-w-xs h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div className="w-full max-w-xs h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                           <div
                             className="h-full bg-red-600"
                             style={{ width: `${attendance.rate}%` }}
@@ -2432,7 +2674,7 @@ export function SupervisorDashboard({
                         </div>
 
                         {sentNotifs.length > 0 && (
-                          <div className="text-[11px] text-blue-700 font-medium tabular-nums">
+                          <div className="text-[11px] text-blue-700 dark:text-blue-400 font-medium tabular-nums">
                             تم إرسال {sentNotifs.length} تنبيه
                             {unreadCount > 0 ? ` (${unreadCount} لم يُقرأ بعد)` : ' (تم الاطلاع)'}
                           </div>
@@ -2461,8 +2703,8 @@ export function SupervisorDashboard({
       {activeTab === 'students' && (
         <>
           {lowAttendanceRows.length > 0 && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5 text-xs sm:text-sm font-semibold text-amber-950">
+            <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-950/40 p-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 text-xs sm:text-sm font-semibold text-amber-950 dark:text-amber-100">
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
                 <span>
                   يوجد{' '}
@@ -2481,76 +2723,101 @@ export function SupervisorDashboard({
             </div>
           )}
 
-          <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
             <div className="relative flex-1 max-w-md">
               <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="ابحث باسم الطالب، رقم الطالب، رقم ولي الأمر، أو اسم الأم..."
+                placeholder="ابحث بالاسم، الهاتف، أو نوع الجهاز/المتصفح..."
                 aria-label="بحث في الطلاب"
-                className="w-full pr-10 pl-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="w-full pr-10 pl-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               />
             </div>
 
-            <select
-              aria-label="تصفية حسب المرحلة"
-              value={stageFilter}
-              onChange={(e) => setStageFilter(e.target.value)}
-              className="px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-            >
-              <option value="جميع المراحل">جميع المراحل</option>
-              {EDUCATIONAL_STAGES.map((st) => (
-                <option key={st} value={st}>
-                  {st}
-                </option>
-              ))}
-            </select>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setMultiDeviceOnly((prev) => !prev)}
+                aria-pressed={multiDeviceOnly}
+                className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap cursor-pointer ${
+                  multiDeviceOnly
+                    ? 'bg-amber-600 border-amber-600 text-white'
+                    : 'bg-slate-50 dark:bg-slate-800/80 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <Laptop className="w-3.5 h-3.5" />
+                <span>تعدد الأجهزة فقط</span>
+                <span
+                  className={`px-1.5 py-0.5 text-[11px] rounded tabular-nums ${
+                    multiDeviceOnly
+                      ? 'bg-amber-700 text-white'
+                      : 'bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300'
+                  }`}
+                >
+                  {multiDeviceStudentsCount}
+                </span>
+              </button>
+
+              <select
+                aria-label="تصفية حسب المرحلة"
+                value={stageFilter}
+                onChange={(e) => setStageFilter(e.target.value)}
+                className="px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+              >
+                <option value="جميع المراحل">جميع المراحل</option>
+                {EDUCATIONAL_STAGES.map((st) => (
+                  <option key={st} value={st}>
+                    {st}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {errorMsg && (
-            <div className="p-4 rounded-xl border border-red-200 bg-red-50 text-sm text-red-900">
+            <div className="p-4 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/50 text-sm text-red-900 dark:text-red-200">
               {errorMsg}
             </div>
           )}
 
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-5 sm:px-6 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+            <div className="px-5 sm:px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <Users className="w-4 h-4 text-blue-700" />
-                <h2 className="text-base font-bold text-slate-900">سجل بيانات الطلاب الكامل</h2>
+                <Users className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                <h2 className="text-base font-bold text-slate-900 dark:text-white">سجل بيانات الطلاب الكامل</h2>
               </div>
               <div className="flex items-center gap-3">
                 <button
                   type="button"
                   onClick={() => void loadStudents()}
                   disabled={loading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-60 transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 disabled:opacity-60 transition-colors cursor-pointer"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
                   <span>تحديث القائمة</span>
                 </button>
-                <span className="text-xs text-slate-500 tabular-nums">
+                <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
                   {filteredStudents.length} طالب
                 </span>
               </div>
             </div>
 
             {loading ? (
-              <div className="p-10 text-center text-sm text-slate-500">
+              <div className="p-10 text-center text-sm text-slate-500 dark:text-slate-400">
                 جاري تحميل بيانات الطلاب...
               </div>
             ) : filteredStudents.length === 0 ? (
               <div className="p-10 text-center space-y-2">
                 <Users className="w-8 h-8 text-slate-300 mx-auto" />
-                <div className="text-sm font-bold text-slate-800">
+                <div className="text-sm font-bold text-slate-800 dark:text-slate-200">
                   {students.length === 0
                     ? 'لا يوجد طلاب مسجلون حتى الآن'
                     : 'لا يوجد طلاب مطابقون لبحثك الحالي.'}
                 </div>
                 {students.length === 0 && (
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
                     أي طالب يسجل حسابه أو يدخل المنصة سيظهر اسمه وبياناته هنا تلقائيًا.
                   </p>
                 )}
@@ -2558,7 +2825,7 @@ export function SupervisorDashboard({
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-right text-xs sm:text-sm">
-                  <thead className="bg-slate-50 border-b border-slate-200 text-xs text-slate-600">
+                  <thead className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400">
                     <tr>
                       <th className="py-3.5 px-4 font-semibold whitespace-nowrap">
                         اسم الطالب ورقمه
@@ -2573,57 +2840,120 @@ export function SupervisorDashboard({
                       <th className="py-3.5 px-4 font-semibold whitespace-nowrap">
                         الحضور والإنجاز
                       </th>
+                      <th className="py-3.5 px-4 font-semibold whitespace-nowrap">
+                        الأجهزة والمتصفح
+                      </th>
                       <th className="py-3.5 px-4 font-semibold whitespace-nowrap">إجراء</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100">
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                     {filteredStudents.map((stu) => {
                       const autoAtt = computeStudentAttendance(stu, allCourses);
                       const attendedDays = getDistinctAttendanceDays(stu.attendanceDates);
+                      const studentDevices = getStudentDevicesDisplay(stu);
+                      const isMultiDevice = studentDevices.length > 1;
                       return (
-                        <tr key={stu.id} className="hover:bg-slate-50/70">
+                        <tr key={stu.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/50 align-top">
                           <td className="py-4 px-4">
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-bold text-slate-900">{stu.studentName}</span>
+                              <span className="font-bold text-slate-900 dark:text-white">{stu.studentName}</span>
                               {stu.isBlocked && (
-                                <span className="px-2 py-0.5 text-[11px] font-semibold bg-red-100 text-red-700 rounded">
+                                <span className="px-2 py-0.5 text-[11px] font-semibold bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300 rounded">
                                   محظور
+                                </span>
+                              )}
+                              {!stu.isBlocked && !stu.autoBlockExempt && studentDevices.length === 2 && (
+                                <span className="px-2 py-0.5 text-[11px] font-semibold bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 rounded">
+                                  إنذار حظر تلقائي
+                                </span>
+                              )}
+                              {stu.autoBlockExempt && (
+                                <span className="px-2 py-0.5 text-[11px] font-semibold bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 rounded">
+                                  مستثنى من الحظر التلقائي
                                 </span>
                               )}
                             </div>
                             <div
-                              className="font-mono text-xs text-slate-500 mt-0.5 tabular-nums"
+                              className="font-mono text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums"
                               dir="ltr"
                             >
                               {stu.studentPhone}
                             </div>
                           </td>
                           <td className="py-4 px-4">
-                            <div className="font-medium text-slate-800">{stu.parentName}</div>
+                            <div className="font-medium text-slate-800 dark:text-slate-200">{stu.parentName}</div>
                             <div
-                              className="font-mono text-xs text-slate-500 mt-0.5 tabular-nums"
+                              className="font-mono text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums"
                               dir="ltr"
                             >
                               {stu.parentPhone}
                             </div>
                           </td>
-                          <td className="py-4 px-4 text-slate-700">{stu.motherName}</td>
+                          <td className="py-4 px-4 text-slate-700 dark:text-slate-300">{stu.motherName}</td>
                           <td className="py-4 px-4">
-                            <div className="font-medium text-slate-900">{stu.stage}</div>
-                            <div className="text-xs text-blue-700 mt-0.5">
+                            <div className="font-medium text-slate-900 dark:text-white">{stu.stage}</div>
+                            <div className="text-xs text-blue-700 dark:text-blue-400 mt-0.5">
                               {stu.specializationType}: {stu.specialization}
                             </div>
                           </td>
                           <td className="py-4 px-4 tabular-nums">
-                            <div className="font-semibold text-slate-900">
+                            <div className="font-semibold text-slate-900 dark:text-white">
                               حضور {autoAtt.rate}%
                             </div>
-                            <div className="text-xs text-slate-500 mt-0.5">
-                              المحفظة: {stu.walletBalance ?? 0} ج.م · {(stu.activeDeviceIds?.length ?? 0)} جهاز
+                            <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                              المحفظة: {stu.walletBalance ?? 0} ج.م
                             </div>
                             {attendedDays.length > 0 && (
-                              <div className="text-[11px] text-blue-700 mt-0.5">
+                              <div className="text-[11px] text-blue-700 dark:text-blue-400 mt-0.5">
                                 آخر حضور: {formatAttendanceDateArabic(attendedDays[0])} ({attendedDays.length} يوم)
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-4 px-4 min-w-[210px]">
+                            {studentDevices.length === 0 ? (
+                              <span className="text-xs text-slate-400 dark:text-slate-500">
+                                لم يُسجّل جهاز بعد
+                              </span>
+                            ) : (
+                              <div className="space-y-1.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
+                                    {studentDevices.length}{' '}
+                                    {studentDevices.length === 1 ? 'جهاز' : 'أجهزة'}
+                                  </span>
+                                  {isMultiDevice && (
+                                    <span className="px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 rounded">
+                                      تعدد أجهزة
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="space-y-1">
+                                  {studentDevices.slice(0, 2).map((dev) => (
+                                    <div
+                                      key={dev.id}
+                                      className="inline-flex items-center gap-1.5 w-full text-[11px] text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1"
+                                    >
+                                      <span className="text-blue-700 dark:text-blue-400 shrink-0">
+                                        {renderDeviceIcon(dev.deviceType)}
+                                      </span>
+                                      <span className="font-semibold text-slate-800 dark:text-slate-100 shrink-0">
+                                        {dev.deviceType}
+                                      </span>
+                                      <span className="text-slate-400" aria-hidden="true">
+                                        ·
+                                      </span>
+                                      <span className="truncate" title={dev.label}>
+                                        {dev.os !== 'غير محدد' ? `${dev.os} · ` : ''}
+                                        {dev.browser}
+                                      </span>
+                                    </div>
+                                  ))}
+                                  {studentDevices.length > 2 && (
+                                    <div className="text-[11px] font-medium text-amber-700 dark:text-amber-400 tabular-nums">
+                                      +{studentDevices.length - 2} أجهزة أخرى
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             )}
                           </td>
@@ -2631,7 +2961,7 @@ export function SupervisorDashboard({
                             <button
                               type="button"
                               onClick={() => openStudentFollowUp(stu)}
-                              className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap cursor-pointer"
+                              className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 dark:bg-slate-800 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap cursor-pointer"
                             >
                               متابعة وتعديل
                             </button>
@@ -2655,16 +2985,16 @@ export function SupervisorDashboard({
           aria-labelledby="sup-student-detail-title"
         >
           <div className="min-h-full flex items-start sm:items-center justify-center py-3 sm:py-6">
-            <div className="bg-white rounded-xl border border-slate-200 max-w-2xl w-full p-4 sm:p-7 shadow-2xl space-y-5 overflow-x-hidden">
-              <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-200">
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 max-w-2xl w-full p-4 sm:p-7 shadow-2xl space-y-5 overflow-x-hidden">
+              <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-800">
                 <div className="min-w-0 flex-1">
                   <h3
                     id="sup-student-detail-title"
-                    className="text-base sm:text-lg font-bold text-slate-900 break-words"
+                    className="text-base sm:text-lg font-bold text-slate-900 dark:text-white break-words"
                   >
                     ملف متابعة الطالب: {selectedStudent.studentName}
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5 break-words">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 break-words">
                     {selectedStudent.stage} · {selectedStudent.specializationType}:{' '}
                     {selectedStudent.specialization}
                   </p>
@@ -2673,22 +3003,22 @@ export function SupervisorDashboard({
                   type="button"
                   onClick={() => setSelectedStudent(null)}
                   aria-label="إغلاق"
-                  className="p-2 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 shrink-0"
+                  className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 bg-slate-50 rounded-lg border border-slate-200 p-3.5 sm:p-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 bg-slate-50 dark:bg-slate-800/80 rounded-lg border border-slate-200 dark:border-slate-800 p-3.5 sm:p-4 text-xs">
                 <div className="min-w-0">
-                  <span className="text-slate-500">رقم الطالب:</span>
-                  <div className="font-mono font-semibold text-slate-900 mt-0.5 break-all" dir="ltr">
+                  <span className="text-slate-500 dark:text-slate-400">رقم الطالب:</span>
+                  <div className="font-mono font-semibold text-slate-900 dark:text-white mt-0.5 break-all" dir="ltr">
                     {selectedStudent.studentPhone}
                   </div>
                 </div>
                 <div className="min-w-0">
-                  <span className="text-slate-500">اسم ولي الأمر ورقمه:</span>
-                  <div className="font-semibold text-slate-900 mt-0.5 break-words">
+                  <span className="text-slate-500 dark:text-slate-400">اسم ولي الأمر ورقمه:</span>
+                  <div className="font-semibold text-slate-900 dark:text-white mt-0.5 break-words">
                     {selectedStudent.parentName} —{' '}
                     <span className="font-mono inline-block" dir="ltr">
                       {selectedStudent.parentPhone}
@@ -2696,94 +3026,238 @@ export function SupervisorDashboard({
                   </div>
                 </div>
                 <div className="min-w-0">
-                  <span className="text-slate-500">اسم الأم:</span>
-                  <div className="font-semibold text-slate-900 mt-0.5 break-words">
+                  <span className="text-slate-500 dark:text-slate-400">اسم الأم:</span>
+                  <div className="font-semibold text-slate-900 dark:text-white mt-0.5 break-words">
                     {selectedStudent.motherName}
                   </div>
                 </div>
                 <div className="min-w-0">
-                  <span className="text-slate-500">تاريخ التسجيل:</span>
-                  <div className="font-mono text-slate-900 mt-0.5 tabular-nums">
+                  <span className="text-slate-500 dark:text-slate-400">تاريخ التسجيل:</span>
+                  <div className="font-mono text-slate-900 dark:text-white mt-0.5 tabular-nums">
                     {new Date(selectedStudent.createdAt).toLocaleDateString('ar-EG')}
                   </div>
                 </div>
               </div>
 
               <form onSubmit={handleSaveFollowUp} className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="p-2.5 rounded-lg bg-blue-100 text-blue-700 shrink-0">
-                      <Laptop className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="text-xs text-slate-500">الأجهزة الفاتحة للحساب</div>
-                      <div className="text-sm font-bold text-slate-900 tabular-nums">
-                        {resetDevicesFlag ? 0 : editDevicesCount} جهاز مسجّل
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/80 p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="p-2.5 rounded-lg bg-blue-100 dark:bg-blue-950/70 text-blue-700 dark:text-blue-400 shrink-0">
+                        <Laptop className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 dark:text-slate-400">
+                          الأجهزة والمتصفحات الفاتحة للحساب
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                          <span className="text-sm font-bold text-slate-900 dark:text-white tabular-nums">
+                            {resetDevicesFlag ? 0 : editDevicesCount} جهاز مسجّل
+                          </span>
+                          {!resetDevicesFlag && editDevicesCount > 1 && (
+                            <span className="px-2 py-0.5 text-[11px] font-bold bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 rounded">
+                              تنبيه: أكثر من جهاز
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
+                    {editDevicesCount > 0 && !resetDevicesFlag && (
+                      <button
+                        type="button"
+                        onClick={() => setResetDevicesFlag(true)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>تصفير الأجهزة</span>
+                      </button>
+                    )}
                   </div>
-                  {editDevicesCount > 0 && !resetDevicesFlag && (
+
+                  {resetDevicesFlag ? (
+                    <div className="text-xs font-medium text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-lg p-2.5">
+                      سيتم مسح جميع الأجهزة المسجلة عند الضغط على «حفظ التعديلات».
+                    </div>
+                  ) : (
+                    (() => {
+                      const devices = getStudentDevicesDisplay(selectedStudent);
+                      if (devices.length === 0) {
+                        return (
+                          <div className="text-xs text-slate-500 dark:text-slate-400">
+                            لم يتم تسجيل دخول من أي جهاز حتى الآن.
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="space-y-2 pt-1">
+                          {devices.map((dev, index) => (
+                            <div
+                              key={dev.id}
+                              className="flex flex-wrap items-center justify-between gap-2.5 p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="p-2 rounded-md bg-slate-100 dark:bg-slate-800 text-blue-700 dark:text-blue-400 shrink-0">
+                                  {renderDeviceIcon(dev.deviceType, 'w-4 h-4')}
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="font-bold text-slate-900 dark:text-white flex flex-wrap items-center gap-1.5">
+                                    <span>
+                                      جهاز {index + 1}: {dev.deviceType}
+                                    </span>
+                                    {dev.os !== 'غير محدد' && (
+                                      <span className="text-slate-500 dark:text-slate-400 font-medium">
+                                        ({dev.os})
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300 mt-0.5">
+                                    <Globe className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                    <span className="truncate">{dev.browser}</span>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="text-left sm:text-right text-[11px] text-slate-500 dark:text-slate-400 shrink-0">
+                                <div className="font-mono" dir="ltr">
+                                  #{dev.id.slice(-6)}
+                                </div>
+                                {dev.lastSeenAt && (
+                                  <div className="tabular-nums mt-0.5">
+                                    آخر نشاط:{' '}
+                                    {new Date(dev.lastSeenAt).toLocaleString('ar-EG', {
+                                      dateStyle: 'short',
+                                      timeStyle: 'short',
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()
+                  )}
+                </div>
+
+                <div
+                  className={`rounded-xl border p-4 space-y-3 ${
+                    editBlocked
+                      ? 'border-red-200 dark:border-red-800 bg-red-50/70 dark:bg-red-950/40'
+                      : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/80'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div
+                        className={`p-2.5 rounded-lg shrink-0 ${
+                          editBlocked ? 'bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300' : 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-400'
+                        }`}
+                      >
+                        <Ban className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 dark:text-slate-400">حالة الحساب</div>
+                        <div
+                          className={`text-sm font-bold ${
+                            editBlocked ? 'text-red-700 dark:text-red-300' : 'text-emerald-700 dark:text-emerald-400'
+                          }`}
+                        >
+                          {editBlocked ? 'الحساب محظور (بلوك)' : 'الحساب نشط'}
+                        </div>
+                      </div>
+                    </div>
                     <button
                       type="button"
-                      onClick={() => setResetDevicesFlag(true)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 cursor-pointer"
+                      disabled={instantActionLoading}
+                      onClick={() => handleToggleBlockImmediate(!editBlocked)}
+                      className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors disabled:opacity-60 cursor-pointer ${
+                        editBlocked
+                          ? 'bg-emerald-700 border-emerald-700 text-white hover:bg-emerald-800'
+                          : 'bg-red-600 border-red-600 text-white hover:bg-red-700'
+                      }`}
                     >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      <span>تصفير الأجهزة</span>
+                      {editBlocked ? (
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                      ) : (
+                        <Ban className="w-3.5 h-3.5" />
+                      )}
+                      <span>{editBlocked ? 'إيقاف الحظر' : 'عمل بلوك للحساب'}</span>
                     </button>
+                  </div>
+                  {editBlocked && selectedStudent.blockReason && (
+                    <div className="text-xs font-medium text-red-800 dark:text-red-200 bg-white/80 dark:bg-slate-900/80 border border-red-200 dark:border-red-800 rounded-lg p-2.5">
+                      سبب الحظر: {selectedStudent.blockReason}
+                    </div>
                   )}
                 </div>
 
                 <div
                   className={`rounded-xl border p-4 flex flex-wrap items-center justify-between gap-3 ${
-                    editBlocked
-                      ? 'border-red-200 bg-red-50/70'
-                      : 'border-slate-200 bg-slate-50'
+                    editAutoBlockExempt
+                      ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-950/30'
+                      : 'border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/30'
                   }`}
                 >
-                  <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
                     <div
                       className={`p-2.5 rounded-lg shrink-0 ${
-                        editBlocked ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+                        editAutoBlockExempt
+                          ? 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-400'
+                          : 'bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300'
                       }`}
                     >
-                      <Ban className="w-5 h-5" />
+                      <AlertTriangle className="w-5 h-5" />
                     </div>
-                    <div>
-                      <div className="text-xs text-slate-500">حالة الحساب</div>
+                    <div className="min-w-0">
+                      <div className="text-xs text-slate-500 dark:text-slate-400">
+                        نظام الحظر التلقائي عند تعدد الأجهزة
+                      </div>
                       <div
                         className={`text-sm font-bold ${
-                          editBlocked ? 'text-red-700' : 'text-emerald-700'
+                          editAutoBlockExempt
+                            ? 'text-emerald-800 dark:text-emerald-300'
+                            : 'text-amber-900 dark:text-amber-200'
                         }`}
                       >
-                        {editBlocked ? 'الحساب محظور (بلوك)' : 'الحساب نشط'}
+                        {editAutoBlockExempt
+                          ? 'موقوف لهذا الطالب (مستثنى من الحظر التلقائي)'
+                          : 'مفعّل (إنذار عند جهازين وحظر تلقائي عند ٣ أجهزة)'}
                       </div>
                     </div>
                   </div>
                   <button
                     type="button"
-                    onClick={() => setEditBlocked((b) => !b)}
-                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      editBlocked
-                        ? 'bg-emerald-700 border-emerald-700 text-white hover:bg-emerald-800'
-                        : 'bg-red-600 border-red-600 text-white hover:bg-red-700'
+                    disabled={instantActionLoading}
+                    onClick={handleToggleAutoBlockExemptImmediate}
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors disabled:opacity-60 cursor-pointer shrink-0 ${
+                      editAutoBlockExempt
+                        ? 'bg-slate-800 dark:bg-slate-700 border-slate-800 dark:border-slate-700 text-white hover:bg-slate-900'
+                        : 'bg-amber-600 border-amber-600 text-white hover:bg-amber-700'
                     }`}
                   >
-                    <Ban className="w-3.5 h-3.5" />
-                    <span>{editBlocked ? 'إلغاء البلوك' : 'عمل بلوك للحساب'}</span>
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>
+                      {editAutoBlockExempt ? 'تفعيل الحظر التلقائي' : 'إيقاف الحظر التلقائي'}
+                    </span>
                   </button>
                 </div>
 
-                <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-4 space-y-3">
+                {followUpActionNotice && (
+                  <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-xs font-semibold text-emerald-900 dark:text-emerald-200 flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
+                    <span>{followUpActionNotice}</span>
+                  </div>
+                )}
+
+                <div className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/60 dark:bg-blue-950/40 p-4 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
-                      <Wallet className="w-4 h-4 text-blue-700 shrink-0" />
+                    <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
+                      <Wallet className="w-4 h-4 text-blue-700 dark:text-blue-400 shrink-0" />
                       <span>إضافة فلوس لمحفظة الحساب</span>
                     </div>
-                    <div className="text-xs font-semibold text-blue-800 tabular-nums">
+                    <div className="text-xs font-semibold text-blue-800 dark:text-blue-300 tabular-nums">
                       الرصيد الحالي: {selectedStudent.walletBalance ?? 0} ج.م
                       {(Number(editWalletAdd) || 0) > 0 && (
-                        <span className="text-emerald-700 mr-1.5">
+                        <span className="text-emerald-700 dark:text-emerald-400 mr-1.5">
                           ← الإجمالي بعد الحفظ:{' '}
                           {(selectedStudent.walletBalance ?? 0) +
                             Math.max(0, Math.round(Number(editWalletAdd) || 0))}{' '}
@@ -2802,7 +3276,7 @@ export function SupervisorDashboard({
                       value={editWalletAdd}
                       onChange={(e) => setEditWalletAdd(e.target.value)}
                       placeholder="اكتب المبلغ المراد إضافته بالجنيه..."
-                      className="flex-1 px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700 tabular-nums"
+                      className="flex-1 px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700 tabular-nums"
                     />
                     <div className="flex items-center gap-1.5 shrink-0">
                       {[100, 250, 500].map((amt) => (
@@ -2814,7 +3288,7 @@ export function SupervisorDashboard({
                               String(Math.max(0, Math.round(Number(prev) || 0)) + amt)
                             )
                           }
-                          className="px-2.5 py-2 text-xs font-semibold text-blue-800 bg-white border border-blue-200 rounded-lg hover:bg-blue-100 tabular-nums cursor-pointer"
+                          className="px-2.5 py-2 text-xs font-semibold text-blue-800 dark:text-blue-300 bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 tabular-nums cursor-pointer"
                         >
                           +{amt}
                         </button>
@@ -2824,8 +3298,8 @@ export function SupervisorDashboard({
                 </div>
 
                 {savedNotice && (
-                  <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-900 flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                  <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-xs font-semibold text-emerald-900 dark:text-emerald-200 flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
                     <span>تم حفظ التعديلات وتحديث حساب الطالب بنجاح.</span>
                   </div>
                 )}
@@ -2834,7 +3308,7 @@ export function SupervisorDashboard({
                   <button
                     type="button"
                     onClick={() => setSelectedStudent(null)}
-                    className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+                    className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700"
                   >
                     إغلاق
                   </button>
@@ -2861,20 +3335,20 @@ export function SupervisorDashboard({
           aria-labelledby="sup-alert-modal-title"
         >
           <div className="min-h-full flex items-center justify-center py-4">
-            <div className="bg-white rounded-xl border border-slate-200 max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-5">
-              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200">
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-5">
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="p-2 rounded-lg bg-amber-50 text-amber-700 shrink-0">
+                  <div className="p-2 rounded-lg bg-amber-50 dark:bg-amber-950/50 text-amber-700 shrink-0">
                     <Bell className="w-5 h-5" />
                   </div>
                   <div className="min-w-0">
                     <h3
                       id="sup-alert-modal-title"
-                      className="text-base sm:text-lg font-bold text-slate-900"
+                      className="text-base sm:text-lg font-bold text-slate-900 dark:text-white"
                     >
                       إرسال تنبيه داخل المنصة
                     </h3>
-                    <p className="text-xs text-slate-500 truncate">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
                       {alertTargets.length === 1
                         ? `إلى الطالب: ${alertTargets[0].studentName}`
                         : `إرسال جماعي إلى ${alertTargets.length} طالب (نسبة الحضور < 50%)`}
@@ -2885,7 +3359,7 @@ export function SupervisorDashboard({
                   type="button"
                   onClick={() => setAlertTargets(null)}
                   aria-label="إغلاق"
-                  className="p-2 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 shrink-0"
+                  className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -2895,7 +3369,7 @@ export function SupervisorDashboard({
                 <div>
                   <label
                     htmlFor="alert-title-input"
-                    className="block text-xs font-semibold text-slate-700 mb-1"
+                    className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                   >
                     عنوان التنبيه
                   </label>
@@ -2906,14 +3380,14 @@ export function SupervisorDashboard({
                     maxLength={120}
                     value={alertTitle}
                     onChange={(e) => setAlertTitle(e.target.value)}
-                    className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                    className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                   />
                 </div>
 
                 <div>
                   <label
                     htmlFor="alert-msg-input"
-                    className="block text-xs font-semibold text-slate-700 mb-1"
+                    className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                   >
                     نص الرسالة للطالب
                   </label>
@@ -2924,7 +3398,7 @@ export function SupervisorDashboard({
                     maxLength={500}
                     value={alertMessage}
                     onChange={(e) => setAlertMessage(e.target.value)}
-                    className="w-full p-3 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                    className="w-full p-3 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                   />
                 </div>
 
@@ -2932,12 +3406,12 @@ export function SupervisorDashboard({
                   <div
                     className={`p-3 rounded-lg border text-xs font-semibold flex items-center gap-2 ${
                       alertFeedback.type === 'ok'
-                        ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                        : 'bg-red-50 border-red-200 text-red-900'
+                        ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                        : 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-red-900 dark:text-red-200'
                     }`}
                   >
                     {alertFeedback.type === 'ok' && (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                      <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
                     )}
                     <span>{alertFeedback.text}</span>
                   </div>
@@ -2947,7 +3421,7 @@ export function SupervisorDashboard({
                   <button
                     type="button"
                     onClick={() => setAlertTargets(null)}
-                    className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+                    className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700"
                   >
                     إغلاق
                   </button>

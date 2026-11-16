@@ -236,7 +236,7 @@ export function ClassroomView({
   if (!activeLesson) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-16 text-center space-y-4">
-        <p className="text-sm text-slate-600">لا توجد حصص مضافة في هذا الكورس بعد.</p>
+        <p className="text-sm text-slate-600 dark:text-slate-400">لا توجد حصص مضافة في هذا الكورس بعد.</p>
         <button
           type="button"
           onClick={onBackToCatalog}
@@ -287,20 +287,20 @@ export function ClassroomView({
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 overflow-x-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-4 pb-6 mb-6 sm:mb-8 border-b border-slate-200">
+      <div className="flex flex-wrap items-center justify-between gap-4 pb-6 mb-6 sm:mb-8 border-b border-slate-200 dark:border-slate-800">
         <div className="space-y-1.5 min-w-0">
           <button
             type="button"
             onClick={onBackToCatalog}
-            className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 hover:text-blue-900 transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 dark:text-blue-400 hover:text-blue-900 dark:hover:text-blue-300 transition-colors cursor-pointer"
           >
             <ArrowRight className="w-4 h-4" />
             <span>العودة إلى الكورسات</span>
           </button>
-          <h1 className="text-lg sm:text-2xl font-bold text-slate-900 text-balance">
+          <h1 className="text-lg sm:text-2xl font-bold text-slate-900 dark:text-white text-balance">
             {course.title}
           </h1>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
             <span>{course.grade}</span>
             <span aria-hidden="true">·</span>
             <span>{course.category}</span>
@@ -320,7 +320,7 @@ export function ClassroomView({
             className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               isCourseCompleted
                 ? 'bg-emerald-700 border-emerald-700 text-white hover:bg-emerald-800'
-                : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+                : 'bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
             }`}
           >
             <Award className="w-4 h-4" />
@@ -333,14 +333,14 @@ export function ClassroomView({
         {/* Main lesson content column */}
         <div className="lg:col-span-8 space-y-6 min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="inline-flex items-center gap-1 p-1 bg-slate-200/70 rounded-lg max-w-full overflow-x-auto">
+            <div className="inline-flex items-center gap-1 p-1 bg-slate-200/70 dark:bg-slate-900 border border-transparent dark:border-slate-800 rounded-lg max-w-full overflow-x-auto">
               <button
                 type="button"
                 onClick={() => setStageMode('lecture')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                   stageMode === 'lecture'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
                 فيديوهات ومحتوى الحصة
@@ -350,8 +350,8 @@ export function ClassroomView({
                 onClick={() => setStageMode('lab')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                   stageMode === 'lab'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
                 المختبر التفاعلي
@@ -360,8 +360,8 @@ export function ClassroomView({
 
             <div className="flex flex-wrap items-center gap-2">
               {canAccessActiveLesson && activeLessonAttendanceDate && (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border bg-blue-50 border-blue-200 text-blue-800 whitespace-nowrap">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200 whitespace-nowrap">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400 shrink-0" />
                   <span>
                     حضور مسجل: {formatAttendanceDateArabic(activeLessonAttendanceDate)}
                   </span>
@@ -374,12 +374,12 @@ export function ClassroomView({
                   onClick={() => onToggleLessonComplete(activeLesson.id)}
                   className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap cursor-pointer ${
                     isCurrentLessonDone
-                      ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
-                      : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+                      ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300'
+                      : 'bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
                   }`}
                 >
                   {isCurrentLessonDone ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                    <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
                   ) : (
                     <Circle className="w-4 h-4 text-slate-400" />
                   )}
@@ -644,15 +644,15 @@ export function ClassroomView({
 
               {/* 2. Lesson Files / Attachments Section */}
               {lessonAttachments.length > 0 && (
-                <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
-                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-100">
+                <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 space-y-3">
+                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
                     <div className="flex items-center gap-2">
-                      <FileText className="w-4 h-4 text-blue-700 shrink-0" />
-                      <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                      <FileText className="w-4 h-4 text-blue-700 dark:text-blue-400 shrink-0" />
+                      <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
                         ملفات وملازم الحصة
                       </h3>
                     </div>
-                    <span className="text-xs text-slate-500 tabular-nums">
+                    <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
                       {lessonAttachments.length} ملف
                     </span>
                   </div>
@@ -661,14 +661,14 @@ export function ClassroomView({
                     {lessonAttachments.map((att) => (
                       <div
                         key={att.id}
-                        className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-slate-50 border border-slate-200"
+                        className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700"
                       >
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-semibold text-slate-900 truncate">
+                          <div className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                             {att.title}
                           </div>
                           {att.fileName && (
-                            <div className="text-xs text-slate-500 truncate" dir="ltr">
+                            <div className="text-xs text-slate-500 dark:text-slate-400 truncate" dir="ltr">
                               {att.fileName}
                             </div>
                           )}
@@ -690,18 +690,18 @@ export function ClassroomView({
               )}
 
               {/* 3. Lesson Exam Section (Directly below Videos & Files) */}
-              <div className="bg-white rounded-xl border border-slate-200 p-5 sm:p-6 space-y-5">
-                <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200">
+              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 sm:p-6 space-y-5">
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
                   <div className="flex items-center gap-2">
-                    <HelpCircle className="w-5 h-5 text-blue-700 shrink-0" />
+                    <HelpCircle className="w-5 h-5 text-blue-700 dark:text-blue-400 shrink-0" />
                     <div>
-                      <h3 className="text-base font-bold text-slate-900">امتحان الحصة</h3>
-                      <p className="text-xs text-slate-500">
+                      <h3 className="text-base font-bold text-slate-900 dark:text-white">امتحان الحصة</h3>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
                         اختبر فهمك لأسئلة هذه الحصة وتعرّف على الحل النموذجي فورًا
                       </p>
                     </div>
                   </div>
-                  <div className="text-xs font-semibold text-blue-800 bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-lg tabular-nums">
+                  <div className="text-xs font-semibold text-blue-800 dark:text-blue-200 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 px-3 py-1.5 rounded-lg tabular-nums">
                     النتيجة: {correctExamCount} / {examQuestions.length}
                     {answeredExamCount < examQuestions.length
                       ? ` (${answeredExamCount} مُجاب)`
@@ -719,14 +719,14 @@ export function ClassroomView({
                     return (
                       <div
                         key={qIdx}
-                        className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3"
+                        className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/60 space-y-3"
                       >
                         <div className="space-y-2.5">
-                          <div className="text-xs font-semibold text-blue-700 tabular-nums">
+                          <div className="text-xs font-semibold text-blue-700 dark:text-blue-400 tabular-nums">
                             السؤال {qIdx + 1} من {examQuestions.length}
                           </div>
                           {q.questionImage && (
-                            <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+                            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white overflow-hidden">
                               <img
                                 src={q.questionImage}
                                 alt={`صورة السؤال ${qIdx + 1}`}
@@ -735,7 +735,7 @@ export function ClassroomView({
                             </div>
                           )}
                           {q.question && q.question.trim().length > 0 && (
-                            <h4 className="text-sm sm:text-base font-bold text-slate-900">
+                            <h4 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
                               {q.question}
                             </h4>
                           )}
@@ -746,14 +746,14 @@ export function ClassroomView({
                             const isChosen = selectedOpt === idx;
                             const isCorrectOpt = idx === q.correctIndex;
                             let optionClasses =
-                              'border-slate-200 bg-white text-slate-800 hover:bg-slate-50';
+                              'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800';
 
                             if (hasAnswered) {
                               if (isCorrectOpt) {
                                 optionClasses =
-                                  'border-emerald-500 bg-emerald-50 text-emerald-950';
+                                  'border-emerald-500 dark:border-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-950 dark:text-emerald-200';
                               } else if (isChosen) {
-                                optionClasses = 'border-red-400 bg-red-50 text-red-950';
+                                optionClasses = 'border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-950/60 text-red-950 dark:text-red-200';
                               }
                             }
 
@@ -766,12 +766,12 @@ export function ClassroomView({
                               >
                                 <span className="min-w-0 break-words">{opt}</span>
                                 {hasAnswered && isCorrectOpt && (
-                                  <span className="text-xs font-semibold text-emerald-700 shrink-0">
+                                  <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300 shrink-0">
                                     إجابة صحيحة
                                   </span>
                                 )}
                                 {hasAnswered && isChosen && !isCorrectOpt && (
-                                  <span className="text-xs font-semibold text-red-700 shrink-0">
+                                  <span className="text-xs font-semibold text-red-700 dark:text-red-300 shrink-0">
                                     إجابة خاطئة
                                   </span>
                                 )}
@@ -784,8 +784,8 @@ export function ClassroomView({
                           <div
                             className={`p-3.5 rounded-lg border text-xs sm:text-sm leading-relaxed ${
                               isCorrect
-                                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                                : 'bg-white border-slate-200 text-slate-800'
+                                ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200'
                             }`}
                           >
                             <strong className="block mb-0.5">
@@ -805,29 +805,29 @@ export function ClassroomView({
               </div>
 
               {/* Optional Personal Student Notes Toggle */}
-              <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 space-y-3">
+              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 space-y-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs sm:text-sm font-bold text-slate-900">
+                  <span className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
                     ملاحظاتك الخاصة في الحصة
                   </span>
                   <button
                     type="button"
                     onClick={() => setShowNotesPanel((s) => !s)}
-                    className="text-xs font-semibold text-blue-700 hover:underline cursor-pointer"
+                    className="text-xs font-semibold text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
                   >
                     {showNotesPanel ? 'إخفاء' : 'كتابة / عرض الملاحظات'}
                   </button>
                 </div>
 
                 {showNotesPanel && (
-                  <div className="space-y-2 pt-2 border-t border-slate-100">
+                  <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
                     <textarea
                       id="lesson-notes-textarea"
                       rows={3}
                       value={notesByLesson[activeLesson.id] ?? ''}
                       onChange={(e) => onSaveNote(activeLesson.id, e.target.value)}
                       placeholder="اكتب ملاحظاتك في هذه الحصة (يتم الحفظ تلقائيًا)..."
-                      className="w-full p-3 text-sm text-slate-800 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                      className="w-full p-3 text-sm text-slate-800 dark:text-slate-100 bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                     />
                   </div>
                 )}
@@ -837,29 +837,29 @@ export function ClassroomView({
         </div>
 
         {/* Vertical stacked lessons sidebar (الحصة الأولى تحتها الثانية...) */}
-        <aside className="lg:col-span-4 bg-white rounded-xl border border-slate-200 p-5 space-y-5 min-w-0">
+        <aside className="lg:col-span-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 space-y-5 min-w-0">
           <div>
-            <div className="flex items-center justify-between text-xs font-semibold text-slate-900 mb-2">
+            <div className="flex items-center justify-between text-xs font-semibold text-slate-900 dark:text-white mb-2">
               <span>تقدمك في الكورس</span>
-              <span className="font-mono tabular-nums text-blue-700">{progressPercent}%</span>
+              <span className="font-mono tabular-nums text-blue-700 dark:text-blue-400">{progressPercent}%</span>
             </div>
-            <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+            <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
               <div
-                className="h-full bg-blue-700 transition-all duration-200"
+                className="h-full bg-blue-700 dark:bg-blue-500 transition-all duration-200"
                 style={{ width: `${progressPercent}%` }}
               />
             </div>
           </div>
 
           <div className="space-y-4">
-            <h2 className="text-sm font-bold text-slate-900 pb-2 border-b border-slate-100">
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white pb-2 border-b border-slate-100 dark:border-slate-800">
               حصص الكورس بالترتيب ({allLessons.length} حصة)
             </h2>
 
             {course.modules.map((mod) => (
               <div key={mod.id} className="space-y-2.5">
                 {course.modules.length > 1 && (
-                  <h3 className="text-xs font-semibold text-slate-500">{mod.title}</h3>
+                  <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400">{mod.title}</h3>
                 )}
                 <div className="flex flex-col gap-2">
                   {mod.lessons.map((lesson) => {
@@ -875,8 +875,8 @@ export function ClassroomView({
                         key={lesson.id}
                         className={`flex items-start gap-2.5 p-3 rounded-xl border transition-colors min-w-0 ${
                           isActive
-                            ? 'bg-blue-50/90 border-blue-300'
-                            : 'bg-slate-50/60 border-slate-200 hover:bg-slate-50'
+                            ? 'bg-blue-50/90 dark:bg-blue-950/60 border-blue-300 dark:border-blue-700'
+                            : 'bg-slate-50/60 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700/80 hover:bg-slate-50 dark:hover:bg-slate-800'
                         }`}
                       >
                         <button
@@ -884,12 +884,12 @@ export function ClassroomView({
                           disabled={locked}
                           onClick={() => onToggleLessonComplete(lesson.id)}
                           aria-label={`تبديل حالة إكمال ${lesson.title}`}
-                          className="shrink-0 mt-0.5 text-slate-400 hover:text-blue-700 disabled:opacity-50"
+                          className="shrink-0 mt-0.5 text-slate-400 hover:text-blue-700 dark:hover:text-blue-400 disabled:opacity-50"
                         >
                           {locked ? (
                             <Lock className="w-4 h-4 text-slate-400" />
                           ) : isDone ? (
-                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                           ) : (
                             <Circle className="w-4 h-4" />
                           )}
@@ -900,17 +900,17 @@ export function ClassroomView({
                           onClick={() => setActiveLessonId(lesson.id)}
                           className="flex-1 text-right min-w-0 cursor-pointer"
                         >
-                          <div className="text-[11px] font-semibold text-blue-700 mb-0.5 tabular-nums">
+                          <div className="text-[11px] font-semibold text-blue-700 dark:text-blue-400 mb-0.5 tabular-nums">
                             الحصة {lessonGlobalIdx + 1}
                           </div>
                           <div
                             className={`text-sm font-bold break-words ${
-                              isActive ? 'text-blue-950' : 'text-slate-900'
+                              isActive ? 'text-blue-950 dark:text-blue-100' : 'text-slate-900 dark:text-white'
                             }`}
                           >
                             {lesson.title}
                           </div>
-                          <div className="text-xs text-slate-500 mt-1 flex flex-wrap items-center gap-2 tabular-nums">
+                          <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex flex-wrap items-center gap-2 tabular-nums">
                             {getLessonAutoMinutes(lesson) > 0 && (
                               <span>{getLessonAutoMinutes(lesson)} دقيقة</span>
                             )}

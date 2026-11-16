@@ -27,16 +27,16 @@ export function CertificateModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 p-3 sm:p-4 backdrop-blur-xs"
+      className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/75 p-3 sm:p-4 backdrop-blur-xs"
       role="dialog"
       aria-modal="true"
       aria-labelledby="certificate-title"
     >
       <div className="min-h-full flex items-start sm:items-center justify-center py-3 sm:py-6">
-        <div className="bg-white rounded-xl border border-slate-200 max-w-3xl w-full p-4 sm:p-8 shadow-2xl overflow-x-hidden">
-          <div className="flex items-center justify-between gap-4 pb-4 mb-6 border-b border-slate-200 no-print">
-            <div className="flex items-center gap-2 text-slate-900 min-w-0">
-              <Award className="w-5 h-5 text-blue-700 shrink-0" />
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 max-w-3xl w-full p-4 sm:p-8 shadow-2xl overflow-x-hidden">
+          <div className="flex items-center justify-between gap-4 pb-4 mb-6 border-b border-slate-200 dark:border-slate-800 no-print">
+            <div className="flex items-center gap-2 text-slate-900 dark:text-white min-w-0">
+              <Award className="w-5 h-5 text-blue-700 dark:text-blue-400 shrink-0" />
               <h3 id="certificate-title" className="text-base sm:text-lg font-bold truncate">
                 شهادة إتمام رسمية
               </h3>
@@ -45,14 +45,14 @@ export function CertificateModal({
               type="button"
               onClick={onClose}
               aria-label="إغلاق نافذة الشهادة"
-              className="p-2 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 transition-colors shrink-0"
+              className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
           <div className="mb-6 no-print">
-            <label htmlFor="cert-student-name" className="block text-xs font-medium text-slate-600 mb-1.5">
+            <label htmlFor="cert-student-name" className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
               الاسم الظاهر على الشهادة
             </label>
             <input
@@ -61,36 +61,36 @@ export function CertificateModal({
               value={studentName}
               onChange={(e) => onUpdateStudentName(e.target.value)}
               placeholder="أدخل اسمك الكامل"
-              className="w-full sm:w-80 px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+              className="w-full sm:w-80 px-3 py-2 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
             />
           </div>
 
-          <div className="border-2 border-slate-900 rounded-lg p-5 sm:p-10 bg-slate-50 text-center">
-            <div className="text-xs font-mono tracking-widest text-blue-700 uppercase mb-3">
+          <div className="border-2 border-slate-900 dark:border-slate-700 rounded-lg p-5 sm:p-10 bg-slate-50 dark:bg-slate-950 text-center">
+            <div className="text-xs font-mono tracking-widest text-blue-700 dark:text-blue-400 uppercase mb-3">
               EZZ ACADEMY · CERTIFICATE OF COMPLETION
             </div>
-            <h4 className="text-xl sm:text-3xl font-bold text-slate-900 mb-4">
+            <h4 className="text-xl sm:text-3xl font-bold text-slate-900 dark:text-white mb-4">
               شهادة إتمام مسار تدريبي
             </h4>
-            <p className="text-sm text-slate-600 mb-3">تشهد منصة Ezz Academy بأن المتعلم</p>
-            <div className="text-xl sm:text-2xl font-bold text-blue-800 mb-4">
+            <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">تشهد منصة Ezz Academy بأن المتعلم</p>
+            <div className="text-xl sm:text-2xl font-bold text-blue-800 dark:text-blue-300 mb-4">
               {studentName.trim() || 'متعلم Ezz Academy'}
             </div>
-            <p className="text-sm text-slate-600 mb-2">قد أتم بنجاح جميع متطلبات ومختبرات دورة</p>
-            <div className="text-base sm:text-lg font-semibold text-slate-900 mb-6">{course.title}</div>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">قد أتم بنجاح جميع متطلبات ومختبرات دورة</p>
+            <div className="text-base sm:text-lg font-semibold text-slate-900 dark:text-white mb-6">{course.title}</div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-6 border-t border-slate-300 text-xs text-slate-600">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-6 border-t border-slate-300 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400">
               <div>
-                <div className="text-slate-400 mb-1">مدرس المادة</div>
-                <div className="font-semibold text-slate-900">{resolvedInstructorName}</div>
+                <div className="text-slate-400 dark:text-slate-500 mb-1">مدرس المادة</div>
+                <div className="font-semibold text-slate-900 dark:text-white">{resolvedInstructorName}</div>
               </div>
               <div>
-                <div className="text-slate-400 mb-1">تاريخ الإصدار</div>
-                <div className="font-semibold text-slate-900 tabular-nums">{issueDate}</div>
+                <div className="text-slate-400 dark:text-slate-500 mb-1">تاريخ الإصدار</div>
+                <div className="font-semibold text-slate-900 dark:text-white tabular-nums">{issueDate}</div>
               </div>
               <div>
-                <div className="text-slate-400 mb-1">رقم التحقق</div>
-                <div className="font-mono font-semibold text-slate-900 tabular-nums">{certificateCode}</div>
+                <div className="text-slate-400 dark:text-slate-500 mb-1">رقم التحقق</div>
+                <div className="font-mono font-semibold text-slate-900 dark:text-white tabular-nums">{certificateCode}</div>
               </div>
             </div>
           </div>
@@ -99,7 +99,7 @@ export function CertificateModal({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
+              className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
             >
               إغلاق
             </button>

@@ -12,6 +12,15 @@ export interface StudentNotification {
   createdAt: string;
 }
 
+export interface StudentDeviceInfo {
+  id: string;
+  browser: string;
+  os: string;
+  deviceType: 'موبايل' | 'تابلت' | 'كمبيوتر';
+  label: string;
+  lastSeenAt: string;
+}
+
 export interface StudentRecord {
   id: string;
   studentName: string;
@@ -31,7 +40,10 @@ export interface StudentRecord {
   attendanceDates?: Record<string, string>;
   walletBalance?: number;
   isBlocked?: boolean;
+  autoBlockExempt?: boolean;
+  blockReason?: string;
   activeDeviceIds?: string[];
+  deviceDetails?: Record<string, StudentDeviceInfo>;
   notifications?: StudentNotification[];
   createdAt: string;
   updatedAt: string;

@@ -11,6 +11,12 @@ import {
   type Course,
 } from './src/data/academyData';
 import { computeStudentAttendance } from './src/utils/attendance';
+import type { StudentDeviceInfo } from './src/types/student';
+import {
+  mergeStudentDeviceEntry,
+  parseUserAgentDetails,
+  sanitizeDeviceInfo,
+} from './src/utils/deviceInfo';
 
 dotenv.config();
 
@@ -72,10 +78,117 @@ export interface StudentRecord {
   attendanceDates?: Record<string, string>;
   walletBalance?: number;
   isBlocked?: boolean;
+  autoBlockExempt?: boolean;
+  blockReason?: string;
   activeDeviceIds?: string[];
+  deviceDetails?: Record<string, StudentDeviceInfo>;
   notifications?: StudentNotificationRecord[];
   createdAt: string;
   updatedAt: string;
+}
+
+const AUTO_BLOCK_WARNING_TITLE = 'إنذار الحظر التلقائي — تعدد الأجهزة';
+const AUTO_BLOCK_REASON =
+  'تم حظر الحساب تلقائيًا لتجاوز الحد المسموح للأجهزة (٣ أجهزة أو أكثر).';
+
+function evaluateMultiDevicePolicy(
+  student: StudentRecord,
+  activeDeviceIds: string[]
+): {
+  isBlocked: boolean;
+  blockReason: string;
+  notifications: StudentNotificationRecord[];
+  justBlocked: boolean;
+} {
+  const existingNotifs = Array.isArray(student.notifications) ? student.notifications : [];
+  if (student.autoBlockExempt) {
+    return {
+      isBlocked: Boolean(student.isBlocked),
+      blockReason: student.blockReason || '',
+      notifications: existingNotifs,
+      justBlocked: false,
+    };
+  }
+
+  if (activeDeviceIds.length >= 3) {
+    const alreadyBlockedNotif = existingNotifs.some(
+      (n) => n.id.startsWith('autoblk-lock-')
+    );
+    const nextNotifs = alreadyBlockedNotif
+      ? existingNotifs
+      : [
+          {
+            id: `autoblk-lock-${Date.now()}`,
+            title: 'تم حظر الحساب تلقائيًا',
+            message:
+              'تم حظر حسابك تلقائيًا بسبب فتحه من 3 أجهزة أو أكثر. تواصل مع المشرف لإيقاف الحظر.',
+            read: false,
+            createdAt: new Date().toISOString(),
+          },
+          ...existingNotifs,
+        ].slice(0, 30);
+    return {
+      isBlocked: true,
+      blockReason: student.blockReason || AUTO_BLOCK_REASON,
+      notifications: nextNotifs,
+      justBlocked: !student.isBlocked,
+    };
+  }
+
+  if (activeDeviceIds.length === 2) {
+    const secondDeviceTag = `warn-autoblk-${activeDeviceIds[1].slice(0, 24)}`;
+    const alreadyWarned = existingNotifs.some((n) => n.id.startsWith(secondDeviceTag));
+    if (!alreadyWarned) {
+      const warnNotif: StudentNotificationRecord = {
+        id: `${secondDeviceTag}-${Date.now()}`,
+        title: AUTO_BLOCK_WARNING_TITLE,
+        message:
+          'تم رصد فتح حسابك من جهاز ثانٍ. يُسمح بحد أقصى جهازين، وفي حالة الدخول من جهاز ثالث سيتم حظر حسابك تلقائيًا لحماية اشتراكاتك.',
+        read: false,
+        createdAt: new Date().toISOString(),
+      };
+      return {
+        isBlocked: Boolean(student.isBlocked),
+        blockReason: student.blockReason || '',
+        notifications: [warnNotif, ...existingNotifs].slice(0, 30),
+        justBlocked: false,
+      };
+    }
+  }
+
+  return {
+    isBlocked: Boolean(student.isBlocked),
+    blockReason: student.blockReason || '',
+    notifications: existingNotifs,
+    justBlocked: false,
+  };
+}
+
+function applyStudentRequestDevice(
+  student: Pick<StudentRecord, 'activeDeviceIds' | 'deviceDetails'>,
+  deviceId: string,
+  rawDeviceInfo: unknown,
+  userAgent: string
+): {
+  activeDeviceIds: string[];
+  deviceDetails: Record<string, StudentDeviceInfo>;
+} {
+  const cleanId = deviceId.trim().slice(0, 100);
+  if (!cleanId) {
+    return {
+      activeDeviceIds: Array.isArray(student.activeDeviceIds) ? student.activeDeviceIds : [],
+      deviceDetails: student.deviceDetails ?? {},
+    };
+  }
+  const info = rawDeviceInfo
+    ? sanitizeDeviceInfo(rawDeviceInfo, cleanId, userAgent)
+    : parseUserAgentDetails(userAgent, cleanId);
+  return mergeStudentDeviceEntry(
+    student.activeDeviceIds,
+    student.deviceDetails,
+    cleanId,
+    info
+  );
 }
 
 function sanitizeStudent(student: StudentRecord): Omit<StudentRecord, 'passwordHash'> {
@@ -333,23 +446,41 @@ async function startServer() {
 
       if (student.isBlocked) {
         res.status(403).json({
-          error: 'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.',
+          error:
+            student.blockReason ||
+            'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.',
         });
         return;
       }
 
       const deviceId = String(req.body?.deviceId ?? '').trim().slice(0, 100);
       if (deviceId) {
-        const existingDevices = Array.isArray(student.activeDeviceIds)
-          ? student.activeDeviceIds
-          : [];
-        if (!existingDevices.includes(deviceId)) {
-          students[studentIdx] = {
-            ...student,
-            activeDeviceIds: [...existingDevices, deviceId].slice(0, 20),
-            updatedAt: new Date().toISOString(),
-          };
-          await saveDb(students);
+        const ua = String(req.headers['user-agent'] ?? '');
+        const mergedDevices = applyStudentRequestDevice(
+          student,
+          deviceId,
+          req.body?.deviceInfo,
+          ua
+        );
+        const policy = evaluateMultiDevicePolicy(student, mergedDevices.activeDeviceIds);
+        students[studentIdx] = {
+          ...student,
+          activeDeviceIds: mergedDevices.activeDeviceIds,
+          deviceDetails: mergedDevices.deviceDetails,
+          isBlocked: policy.isBlocked,
+          blockReason: policy.blockReason,
+          notifications: policy.notifications,
+          updatedAt: new Date().toISOString(),
+        };
+        await saveDb(students);
+
+        if (policy.isBlocked) {
+          res.status(403).json({
+            error:
+              policy.blockReason ||
+              'تم حظر هذا الحساب تلقائيًا لتجاوز الحد المسموح للأجهزة. تواصل مع المشرف لإيقاف الحظر.',
+          });
+          return;
         }
       }
 
@@ -411,6 +542,13 @@ async function startServer() {
 
       const specializationType = stage === 'البكالوريا' ? 'مسار' : 'شعبة';
       const deviceId = String(req.body?.deviceId ?? '').trim().slice(0, 100);
+      const ua = String(req.headers['user-agent'] ?? '');
+      const mergedDevices = applyStudentRequestDevice(
+        { activeDeviceIds: [], deviceDetails: {} },
+        deviceId,
+        req.body?.deviceInfo,
+        ua
+      );
       const now = new Date().toISOString();
       const newStudent: StudentRecord = {
         id: `stu-${Date.now()}`,
@@ -432,7 +570,10 @@ async function startServer() {
         attendanceDates: {},
         walletBalance: 0,
         isBlocked: false,
-        activeDeviceIds: deviceId ? [deviceId] : [],
+        autoBlockExempt: false,
+        blockReason: '',
+        activeDeviceIds: mergedDevices.activeDeviceIds,
+        deviceDetails: mergedDevices.deviceDetails,
         createdAt: now,
         updatedAt: now,
       };
@@ -499,13 +640,14 @@ async function startServer() {
           : existing.attendanceDates ?? {};
 
       const deviceId = String(req.body?.deviceId ?? '').trim().slice(0, 100);
-      const currentDevices = Array.isArray(existing.activeDeviceIds)
-        ? existing.activeDeviceIds
-        : [];
-      const nextDevices =
-        deviceId && !currentDevices.includes(deviceId)
-          ? [...currentDevices, deviceId].slice(0, 20)
-          : currentDevices;
+      const ua = String(req.headers['user-agent'] ?? '');
+      const mergedDevices = applyStudentRequestDevice(
+        existing,
+        deviceId,
+        req.body?.deviceInfo,
+        ua
+      );
+      const policy = evaluateMultiDevicePolicy(existing, mergedDevices.activeDeviceIds);
 
       const updated: StudentRecord = {
         ...existing,
@@ -521,12 +663,24 @@ async function startServer() {
             : existing.notesByLesson,
         attendanceRate: autoAttendance.rate,
         attendanceDates: nextAttendanceDates,
-        activeDeviceIds: nextDevices,
+        activeDeviceIds: mergedDevices.activeDeviceIds,
+        deviceDetails: mergedDevices.deviceDetails,
+        isBlocked: policy.isBlocked,
+        blockReason: policy.blockReason,
+        notifications: policy.notifications,
         updatedAt: new Date().toISOString(),
       };
 
       students[idx] = updated;
       await saveDb(students);
+      if (policy.isBlocked) {
+        res.status(403).json({
+          error:
+            policy.blockReason ||
+            'تم حظر هذا الحساب تلقائيًا لتجاوز الحد المسموح للأجهزة.',
+        });
+        return;
+      }
       res.json({ student: sanitizeStudent(updated) });
     } catch (err) {
       console.error('Progress update error:', err);
@@ -557,17 +711,37 @@ async function startServer() {
       }
       const deviceId = String(req.query.deviceId ?? '').trim().slice(0, 100);
       if (deviceId && !students[idx].isBlocked) {
-        const curDevices = Array.isArray(students[idx].activeDeviceIds)
-          ? students[idx].activeDeviceIds!
-          : [];
-        if (!curDevices.includes(deviceId)) {
-          students[idx] = {
-            ...students[idx],
-            activeDeviceIds: [...curDevices, deviceId].slice(0, 20),
-            updatedAt: new Date().toISOString(),
-          };
-          await saveDb(students);
-        }
+        const ua = String(req.headers['user-agent'] ?? '');
+        const queryDeviceInfo =
+          req.query.deviceBrowser || req.query.deviceOs || req.query.deviceType
+            ? {
+                id: deviceId,
+                browser: String(req.query.deviceBrowser ?? ''),
+                os: String(req.query.deviceOs ?? ''),
+                deviceType: String(req.query.deviceType ?? ''),
+                lastSeenAt: new Date().toISOString(),
+              }
+            : undefined;
+        const mergedDevices = applyStudentRequestDevice(
+          students[idx],
+          deviceId,
+          queryDeviceInfo,
+          ua
+        );
+        const policy = evaluateMultiDevicePolicy(
+          students[idx],
+          mergedDevices.activeDeviceIds
+        );
+        students[idx] = {
+          ...students[idx],
+          activeDeviceIds: mergedDevices.activeDeviceIds,
+          deviceDetails: mergedDevices.deviceDetails,
+          isBlocked: policy.isBlocked,
+          blockReason: policy.blockReason,
+          notifications: policy.notifications,
+          updatedAt: new Date().toISOString(),
+        };
+        await saveDb(students);
       }
       res.json({ student: sanitizeStudent(students[idx]) });
     } catch (err) {
@@ -722,6 +896,25 @@ async function startServer() {
               ? req.body.activeDeviceIds
               : existing.activeDeviceIds ?? [];
 
+        const nextDeviceDetails =
+          req.body?.resetDevices === true
+            ? {}
+            : existing.deviceDetails ?? {};
+
+        const nextAutoBlockExempt =
+          typeof req.body?.autoBlockExempt === 'boolean'
+            ? req.body.autoBlockExempt
+            : Boolean(existing.autoBlockExempt) ||
+              (existing.isBlocked === true &&
+                nextBlocked === false &&
+                nextDevices.length >= 3);
+
+        const nextBlockReason = nextBlocked
+          ? typeof req.body?.blockReason === 'string'
+            ? req.body.blockReason
+            : existing.blockReason || 'تم حظر الحساب من قِبل الإدارة.'
+          : '';
+
         const updated: StudentRecord = {
           ...existing,
           supervisorNotes:
@@ -732,7 +925,10 @@ async function startServer() {
           unlockedCourseIds: nextUnlocked,
           walletBalance: nextWallet,
           isBlocked: nextBlocked,
+          autoBlockExempt: nextAutoBlockExempt,
+          blockReason: nextBlockReason,
           activeDeviceIds: nextDevices,
+          deviceDetails: nextDeviceDetails,
           updatedAt: new Date().toISOString(),
         };
 
@@ -1140,6 +1336,36 @@ async function startServer() {
       } catch (err) {
         console.error('Update course error:', err);
         res.status(500).json({ error: 'تعذر تحديث بيانات الكورس والحصص.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/supervisor/courses/delete-batch',
+    requireSupervisor,
+    async (req: Request, res: Response) => {
+      try {
+        const rawIds: unknown[] = Array.isArray(req.body?.courseIds)
+          ? req.body.courseIds
+          : [];
+        const courseIds = rawIds.map((id) => String(id).trim()).filter(Boolean);
+        if (courseIds.length === 0) {
+          res.status(400).json({ error: 'لم يتم تحديد أي كورس للحذف.' });
+          return;
+        }
+        const idSet = new Set(courseIds);
+        const catalog = await ensureCatalogDb();
+        catalog.customCourses = catalog.customCourses.filter((c) => !idSet.has(c.id));
+        for (const c of COURSES) {
+          if (idSet.has(c.id) && !catalog.deletedCourseIds.includes(c.id)) {
+            catalog.deletedCourseIds.push(c.id);
+          }
+        }
+        await saveCatalogDb(catalog);
+        res.json({ ok: true, deletedCount: courseIds.length });
+      } catch (err) {
+        console.error('Batch delete course error:', err);
+        res.status(500).json({ error: 'تعذر حفظ تغييرات حذف الكورسات.' });
       }
     }
   );

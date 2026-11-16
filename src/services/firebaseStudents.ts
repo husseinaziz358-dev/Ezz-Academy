@@ -12,8 +12,12 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
-import { StudentNotification, StudentRecord } from '../types/student';
-import { normalizeDigits } from '../utils/apiClient';
+import { StudentDeviceInfo, StudentNotification, StudentRecord } from '../types/student';
+import { getOrCreateDeviceId, normalizeDigits } from '../utils/apiClient';
+import {
+  getClientDeviceInfo,
+  sanitizeDeviceInfo,
+} from '../utils/deviceInfo';
 
 const ADMIN_EMAIL = 'fatmasoltan1972@gmail.com';
 
@@ -48,6 +52,17 @@ function mapFirestoreToStudentRecord(
   contactData?: Record<string, unknown>,
   notifications: StudentNotification[] = []
 ): StudentRecord {
+  const rawDetails =
+    profileData.deviceDetails && typeof profileData.deviceDetails === 'object'
+      ? (profileData.deviceDetails as Record<string, unknown>)
+      : {};
+  const deviceDetails: Record<string, StudentDeviceInfo> = {};
+  for (const [k, v] of Object.entries(rawDetails)) {
+    if (k && v && typeof v === 'object') {
+      deviceDetails[k] = sanitizeDeviceInfo(v, k);
+    }
+  }
+
   return {
     id: uid,
     studentName: String(profileData.studentName ?? ''),
@@ -83,9 +98,12 @@ function mapFirestoreToStudentRecord(
     walletBalance:
       typeof profileData.walletBalance === 'number' ? profileData.walletBalance : 0,
     isBlocked: profileData.isBlocked === true,
+    autoBlockExempt: profileData.autoBlockExempt === true,
+    blockReason: typeof profileData.blockReason === 'string' ? profileData.blockReason : '',
     activeDeviceIds: Array.isArray(profileData.activeDeviceIds)
       ? (profileData.activeDeviceIds as string[])
       : [],
+    deviceDetails,
     notifications,
     createdAt: toIsoString(profileData.createdAt),
     updatedAt: toIsoString(profileData.updatedAt),
@@ -288,6 +306,11 @@ export async function createFirebaseStudentProfile(
 
   const unlockedCourseIds = ['course-sec3-pure-applied', 'course-sec1-math'];
   const supervisorNotes = 'حساب جديد — في انتظار المراجعة الأولى.';
+  const deviceId = getOrCreateDeviceId();
+  const deviceInfo = getClientDeviceInfo(deviceId);
+  const initialDeviceDetails: Record<string, StudentDeviceInfo> = {
+    [deviceId]: deviceInfo,
+  };
   const batch = writeBatch(db);
 
   batch.set(doc(db, 'students', uid), {
@@ -305,7 +328,10 @@ export async function createFirebaseStudentProfile(
     attendanceDates: {},
     walletBalance: 0,
     isBlocked: false,
-    activeDeviceIds: [],
+    autoBlockExempt: false,
+    blockReason: '',
+    activeDeviceIds: [deviceId],
+    deviceDetails: initialDeviceDetails,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -353,7 +379,10 @@ export async function createFirebaseStudentProfile(
       attendanceDates: {},
       walletBalance: 0,
       isBlocked: false,
-      activeDeviceIds: [],
+      autoBlockExempt: false,
+      blockReason: '',
+      activeDeviceIds: [deviceId],
+      deviceDetails: initialDeviceDetails,
       createdAt: now,
       updatedAt: now,
     },
@@ -370,7 +399,10 @@ export async function syncFirebaseStudentProgress(
     attendanceRate: number;
     attendanceDates?: Record<string, string>;
     walletBalance?: number;
+    isBlocked?: boolean;
+    blockReason?: string;
     activeDeviceIds?: string[];
+    deviceDetails?: Record<string, StudentDeviceInfo>;
   }
 ): Promise<void> {
   if (!auth.currentUser || auth.currentUser.uid !== uid || !ID_PATTERN.test(uid)) {
@@ -398,10 +430,25 @@ export async function syncFirebaseStudentProgress(
   if (typeof updates.walletBalance === 'number' && Number.isFinite(updates.walletBalance)) {
     updatePayload.walletBalance = Math.max(0, Math.round(updates.walletBalance));
   }
+  if (updates.isBlocked === true) {
+    updatePayload.isBlocked = true;
+    if (typeof updates.blockReason === 'string' && updates.blockReason.trim()) {
+      updatePayload.blockReason = sanitizeText(updates.blockReason, 300);
+    }
+  }
   if (Array.isArray(updates.activeDeviceIds)) {
     updatePayload.activeDeviceIds = updates.activeDeviceIds
       .filter((d) => typeof d === 'string' && d.trim().length > 0)
       .slice(0, 20);
+  }
+  if (updates.deviceDetails && typeof updates.deviceDetails === 'object') {
+    const cleanDeviceDetails: Record<string, StudentDeviceInfo> = {};
+    for (const [k, v] of Object.entries(updates.deviceDetails).slice(0, 20)) {
+      if (typeof k === 'string' && k.trim() && v && typeof v === 'object') {
+        cleanDeviceDetails[k.slice(0, 100)] = sanitizeDeviceInfo(v, k);
+      }
+    }
+    updatePayload.deviceDetails = cleanDeviceDetails;
   }
   try {
     await updateDoc(doc(db, 'students', uid), updatePayload);
@@ -459,7 +506,10 @@ export async function updateFirebaseStudentBySupervisor(
     unlockedCourseIds?: string[];
     walletBalance?: number;
     isBlocked?: boolean;
+    autoBlockExempt?: boolean;
+    blockReason?: string;
     activeDeviceIds?: string[];
+    deviceDetails?: Record<string, StudentDeviceInfo>;
   }
 ): Promise<StudentRecord> {
   if (!ID_PATTERN.test(studentUid)) {
@@ -483,9 +533,21 @@ export async function updateFirebaseStudentBySupervisor(
   }
   if (typeof updates.isBlocked === 'boolean') {
     updatePayload.isBlocked = updates.isBlocked;
+    if (!updates.isBlocked && typeof updates.blockReason !== 'string') {
+      updatePayload.blockReason = '';
+    }
+  }
+  if (typeof updates.autoBlockExempt === 'boolean') {
+    updatePayload.autoBlockExempt = updates.autoBlockExempt;
+  }
+  if (typeof updates.blockReason === 'string') {
+    updatePayload.blockReason = sanitizeText(updates.blockReason, 300);
   }
   if (Array.isArray(updates.activeDeviceIds)) {
     updatePayload.activeDeviceIds = updates.activeDeviceIds.slice(0, 20);
+  }
+  if (updates.deviceDetails && typeof updates.deviceDetails === 'object') {
+    updatePayload.deviceDetails = updates.deviceDetails;
   }
 
   try {

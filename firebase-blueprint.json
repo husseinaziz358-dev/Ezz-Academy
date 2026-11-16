@@ -100,11 +100,24 @@
         },
         "isBlocked": {
           "type": "boolean",
-          "description": "Whether the student account has been blocked by the supervisor."
+          "description": "Whether the student account has been blocked by the supervisor or automatically."
+        },
+        "autoBlockExempt": {
+          "type": "boolean",
+          "description": "Whether automatic multi-device blocking is disabled for this student by the supervisor."
+        },
+        "blockReason": {
+          "type": "string",
+          "description": "Reason for manual or automatic account block.",
+          "maxLength": 300
         },
         "activeDeviceIds": {
           "type": "array",
           "description": "List of unique device identifiers that have signed into this student account."
+        },
+        "deviceDetails": {
+          "type": "object",
+          "description": "Map of active device identifiers to browser, OS, device type, and last activity timestamp."
         },
         "createdAt": {
           "type": "string",

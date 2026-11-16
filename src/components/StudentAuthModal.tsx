@@ -114,16 +114,16 @@ export function StudentAuthModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 p-3 sm:p-4 backdrop-blur-xs"
+      className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/75 p-3 sm:p-4 backdrop-blur-xs"
       role="dialog"
       aria-modal="true"
       aria-labelledby="auth-modal-title"
     >
       <div className="min-h-full flex items-start sm:items-center justify-center py-3 sm:py-6">
-        <div className="bg-white rounded-xl border border-slate-200 max-w-xl w-full p-4 sm:p-7 shadow-2xl space-y-5 overflow-x-hidden">
-        <div className="flex items-center justify-between gap-4 pb-4 border-b border-slate-200">
-          <div className="flex items-center gap-2 text-slate-900">
-            <UserCheck className="w-5 h-5 text-blue-700" />
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 max-w-xl w-full p-4 sm:p-7 shadow-2xl space-y-5 overflow-x-hidden">
+        <div className="flex items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
+          <div className="flex items-center gap-2 text-slate-900 dark:text-white">
+            <UserCheck className="w-5 h-5 text-blue-700 dark:text-blue-400" />
             <h3 id="auth-modal-title" className="text-lg font-bold">
               حساب الطالب
             </h3>
@@ -132,13 +132,13 @@ export function StudentAuthModal({
             type="button"
             onClick={onClose}
             aria-label="إغلاق"
-            className="p-2 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100"
+            className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg">
+        <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-slate-800/80 rounded-lg">
           <button
             type="button"
             onClick={() => {
@@ -147,8 +147,8 @@ export function StudentAuthModal({
             }}
             className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
               activeTab === 'login'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
             تسجيل الدخول
@@ -161,8 +161,8 @@ export function StudentAuthModal({
             }}
             className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
               activeTab === 'register'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
             إنشاء حساب طالب جديد
@@ -170,7 +170,7 @@ export function StudentAuthModal({
         </div>
 
         {errorMsg && (
-          <div className="p-3 text-xs font-medium text-red-900 bg-red-50 border border-red-200 rounded-lg">
+          <div className="p-3 text-xs font-medium text-red-900 dark:text-red-200 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 rounded-lg">
             {errorMsg}
           </div>
         )}
@@ -180,7 +180,7 @@ export function StudentAuthModal({
             <div>
               <label
                 htmlFor="login-phone"
-                className="block text-xs font-semibold text-slate-700 mb-1.5"
+                className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5"
               >
                 رقم الهاتف
               </label>
@@ -192,14 +192,14 @@ export function StudentAuthModal({
                 value={loginPhone}
                 onChange={(e) => setLoginPhone(e.target.value)}
                 placeholder="01012345678"
-                className="w-full px-3.5 py-2.5 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                className="w-full px-3.5 py-2.5 text-sm font-mono bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               />
             </div>
 
             <div>
               <label
                 htmlFor="login-password"
-                className="block text-xs font-semibold text-slate-700 mb-1.5"
+                className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5"
               >
                 كلمة المرور
               </label>
@@ -212,13 +212,13 @@ export function StudentAuthModal({
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full pl-10 pr-3.5 py-2.5 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  className="w-full pl-10 pr-3.5 py-2.5 text-sm font-mono bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 />
                 <button
                   type="button"
                   onClick={() => setShowLoginPassword((s) => !s)}
                   aria-label={showLoginPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                  className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-800"
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white"
                 >
                   {showLoginPassword ? (
                     <EyeOff className="w-4 h-4" />
@@ -233,7 +233,7 @@ export function StudentAuthModal({
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+                className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700"
               >
                 إلغاء
               </button>
@@ -254,7 +254,7 @@ export function StudentAuthModal({
               <div>
                 <label
                   htmlFor="reg-student-name"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
+                  className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                 >
                   اسم الطالب
                 </label>
@@ -265,14 +265,14 @@ export function StudentAuthModal({
                   value={studentName}
                   onChange={(e) => setStudentName(e.target.value)}
                   placeholder="الاسم الكامل للطالب"
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 />
               </div>
 
               <div>
                 <label
                   htmlFor="reg-student-phone"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
+                  className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                 >
                   رقم الطالب
                 </label>
@@ -284,7 +284,7 @@ export function StudentAuthModal({
                   value={studentPhone}
                   onChange={(e) => setStudentPhone(e.target.value)}
                   placeholder="01012345678"
-                  className="w-full px-3 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  className="w-full px-3 py-2 text-sm font-mono bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 />
               </div>
             </div>
@@ -293,7 +293,7 @@ export function StudentAuthModal({
               <div>
                 <label
                   htmlFor="reg-parent-name"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
+                  className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                 >
                   اسم ولي الأمر
                 </label>
@@ -304,14 +304,14 @@ export function StudentAuthModal({
                   value={parentName}
                   onChange={(e) => setParentName(e.target.value)}
                   placeholder="اسم ولي الأمر"
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 />
               </div>
 
               <div>
                 <label
                   htmlFor="reg-parent-phone"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
+                  className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                 >
                   رقم ولي الأمر
                 </label>
@@ -323,7 +323,7 @@ export function StudentAuthModal({
                   value={parentPhone}
                   onChange={(e) => setParentPhone(e.target.value)}
                   placeholder="01099887766"
-                  className="w-full px-3 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  className="w-full px-3 py-2 text-sm font-mono bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 />
               </div>
             </div>
@@ -332,7 +332,7 @@ export function StudentAuthModal({
               <div>
                 <label
                   htmlFor="reg-mother-name"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
+                  className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                 >
                   اسم الأم
                 </label>
@@ -343,14 +343,14 @@ export function StudentAuthModal({
                   value={motherName}
                   onChange={(e) => setMotherName(e.target.value)}
                   placeholder="اسم الأم ثلاثي"
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 />
               </div>
 
               <div>
                 <label
                   htmlFor="reg-password"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
+                  className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                 >
                   كلمة المرور
                 </label>
@@ -364,13 +364,13 @@ export function StudentAuthModal({
                     value={registerPassword}
                     onChange={(e) => setRegisterPassword(e.target.value)}
                     placeholder="••••••"
-                    className="w-full pl-10 pr-3 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                    className="w-full pl-10 pr-3 py-2 text-sm font-mono bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                   />
                   <button
                     type="button"
                     onClick={() => setShowRegisterPassword((s) => !s)}
                     aria-label={showRegisterPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                    className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-800"
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white"
                   >
                     {showRegisterPassword ? (
                       <EyeOff className="w-4 h-4" />
@@ -386,7 +386,7 @@ export function StudentAuthModal({
               <div>
                 <label
                   htmlFor="reg-stage"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
+                  className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                 >
                   المرحلة التعليمية
                 </label>
@@ -394,7 +394,7 @@ export function StudentAuthModal({
                   id="reg-stage"
                   value={stage}
                   onChange={(e) => handleStageChange(e.target.value as EducationalStage)}
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 >
                   {EDUCATIONAL_STAGES.map((st) => (
                     <option key={st} value={st}>
@@ -407,7 +407,7 @@ export function StudentAuthModal({
               <div>
                 <label
                   htmlFor="reg-specialization"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
+                  className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                 >
                   {stage === 'البكالوريا' ? 'اختر المسار (بكالوريا)' : 'اختر الشعبة (ثانوي)'}
                 </label>
@@ -415,7 +415,7 @@ export function StudentAuthModal({
                   id="reg-specialization"
                   value={specialization}
                   onChange={(e) => setSpecialization(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 >
                   {specializationOptions.map((opt) => (
                     <option key={opt} value={opt}>
@@ -430,7 +430,7 @@ export function StudentAuthModal({
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+                className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700"
               >
                 إلغاء
               </button>
