@@ -57,6 +57,7 @@ service cloud.firestore {
       && data.keys().hasOnly([
         'uid',
         'studentName',
+        'studentAvatar',
         'stage',
         'specializationType',
         'specialization',
@@ -83,6 +84,7 @@ service cloud.firestore {
       && data.studentName is string
       && data.studentName.size() >= 2
       && data.studentName.size() <= 120
+      && (!('studentAvatar' in data) || (data.studentAvatar is string && data.studentAvatar.size() <= 1000000))
       && data.stage in [
         'الصف الأول الثانوي',
         'الصف الثاني الثانوي',
@@ -231,6 +233,8 @@ service cloud.firestore {
             && (!('isBlocked' in incoming()) || incoming().isBlocked == false || (incoming().isBlocked == true && (!('autoBlockExempt' in existing()) || existing().autoBlockExempt == false)))
             && (!('blockReason' in incoming()) || incoming().isBlocked == true || incoming().blockReason == '')
             && incoming().diff(existing()).affectedKeys().hasOnly([
+              'studentName',
+              'studentAvatar',
               'unlockedCourseIds',
               'completedLessonIds',
               'quizAnswers',

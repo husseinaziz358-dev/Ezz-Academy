@@ -35,6 +35,7 @@ export interface LessonExamResult {
 export interface StudentRecord {
   id: string;
   studentName: string;
+  studentAvatar?: string;
   studentPhone: string;
   studentEmail?: string;
   parentName: string;
@@ -93,6 +94,7 @@ export interface DynamicTeacher {
   subject: string;
   grades: EducationalStage[];
   image: string;
+  telegramSupport?: string;
   createdAt: string;
 }
 

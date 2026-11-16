@@ -51,10 +51,13 @@ import {
   resolvePdfAttachment,
 } from '../utils/mediaHelpers';
 
+import { formatTelegramUrl } from '../utils/apiClient';
+
 interface ClassroomViewProps {
   course: Course;
   instructorName?: string;
   instructorImage?: string;
+  instructorTelegramSupport?: string;
   isUnlocked: boolean;
   isSupervisor?: boolean;
   completedLessonIds: string[];
@@ -63,9 +66,11 @@ interface ClassroomViewProps {
   quizAnswers: Record<string, number>;
   examResults?: Record<string, LessonExamResult>;
   studentName: string;
+  studentAvatar?: string;
   studentEmail?: string;
   studentPhone?: string;
   onUpdateStudentName: (name: string) => void;
+  onUpdateStudentAvatar?: (avatarUrl: string) => void;
   onToggleLessonComplete: (lessonId: string) => void;
   onMarkLessonComplete?: (lessonId: string) => void;
   onRecordLessonAttendance?: (lessonId: string, dateKey: string) => void;
@@ -271,6 +276,7 @@ export function ClassroomView({
   course,
   instructorName,
   instructorImage,
+  instructorTelegramSupport,
   isUnlocked,
   isSupervisor = false,
   completedLessonIds,
@@ -279,9 +285,11 @@ export function ClassroomView({
   quizAnswers,
   examResults = {},
   studentName,
+  studentAvatar,
   studentEmail,
   studentPhone,
   onUpdateStudentName,
+  onUpdateStudentAvatar,
   onToggleLessonComplete,
   onMarkLessonComplete,
   onRecordLessonAttendance,
@@ -348,6 +356,8 @@ export function ClassroomView({
     allLessons.find((l) => l.id === activeLessonId) ?? allLessons[0];
   const resolvedInstructorName =
     instructorName || getInstructorById(course.instructorId).name;
+  const resolvedTelegramSupport =
+    (instructorTelegramSupport ?? getInstructorById(course.instructorId).telegramSupport ?? '').trim();
 
   // Always start on Course Overview screen when opening a course (in ANY state, including preview)
   useEffect(() => {
@@ -605,7 +615,7 @@ export function ClassroomView({
             </div>
 
             {/* Instructor Badge Strip */}
-            <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800">
+            <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-10 h-10 rounded-full overflow-hidden bg-amber-50 dark:bg-slate-800 border border-amber-200 dark:border-slate-700 flex items-center justify-center shrink-0">
                   {instructorImage ? (
@@ -628,9 +638,22 @@ export function ClassroomView({
                   <BadgeCheck className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
                 </div>
               </div>
-              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 shrink-0">
-                مدرس المادة
-              </span>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {resolvedTelegramSupport && (
+                  <a
+                    href={formatTelegramUrl(resolvedTelegramSupport)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>الدعم العلمي (تليجرام): {resolvedTelegramSupport}</span>
+                  </a>
+                )}
+                <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  مدرس المادة
+                </span>
+              </div>
             </div>
 
             {/* Course Details Spec Rows */}
@@ -1619,8 +1642,10 @@ export function ClassroomView({
             examScorePercent={certificateTarget.scorePercent}
             submittedAt={certificateTarget.submittedAt}
             studentName={studentName}
+            studentAvatar={studentAvatar}
             instructorName={resolvedInstructorName}
             onUpdateStudentName={onUpdateStudentName}
+            onUpdateStudentAvatar={onUpdateStudentAvatar}
             onClose={() => setCertificateTarget(null)}
           />
         )}
@@ -2687,8 +2712,10 @@ export function ClassroomView({
           examScorePercent={certificateTarget.scorePercent}
           submittedAt={certificateTarget.submittedAt}
           studentName={studentName}
+          studentAvatar={studentAvatar}
           instructorName={resolvedInstructorName}
           onUpdateStudentName={onUpdateStudentName}
+          onUpdateStudentAvatar={onUpdateStudentAvatar}
           onClose={() => setCertificateTarget(null)}
         />
       )}

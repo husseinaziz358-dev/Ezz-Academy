@@ -22,6 +22,8 @@ import {
   Laptop,
   Link2,
   LogOut,
+  MessageCircle,
+  Phone,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -72,8 +74,13 @@ import {
   apiSendSupervisorAlerts,
   apiUpdateCourse,
   apiUpdateSupervisorStudent,
+  apiUpdateSupportWhatsappPhone,
+  apiUpdateTeacher,
   apiUploadMediaFile,
+  formatTelegramUrl,
+  formatWhatsappUrl,
   mergeCatalogCourses,
+  normalizeDigits,
 } from '../utils/apiClient';
 import {
   computeStudentAttendance,
@@ -98,7 +105,7 @@ import {
   resolvePdfAttachment,
 } from '../utils/mediaHelpers';
 
-export type AdminTab = 'students' | 'low-attendance' | 'teachers' | 'courses';
+export type AdminTab = 'students' | 'approvals' | 'low-attendance' | 'teachers' | 'courses';
 
 interface SupervisorDashboardProps {
   supervisorName: string;
@@ -108,6 +115,7 @@ interface SupervisorDashboardProps {
   teachers: DynamicTeacher[];
   customCourses: Course[];
   deletedCourseIds?: string[];
+  supportWhatsappPhone?: string;
   onCatalogUpdated: () => Promise<void> | void;
   onLogout: () => void;
 }
@@ -227,6 +235,7 @@ export function SupervisorDashboard({
   teachers,
   customCourses,
   deletedCourseIds = [],
+  supportWhatsappPhone = '01022193514',
   onCatalogUpdated,
   onLogout,
 }: SupervisorDashboardProps) {
@@ -235,9 +244,15 @@ export function SupervisorDashboard({
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [phoneSearchQuery, setPhoneSearchQuery] = useState('');
   const [stageFilter, setStageFilter] = useState<string>('جميع المراحل');
   const [multiDeviceOnly, setMultiDeviceOnly] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<StudentRecord | null>(null);
+
+  // Supervisor WhatsApp top-up phone configuration state
+  const [whatsappPhoneDraft, setWhatsappPhoneDraft] = useState(supportWhatsappPhone);
+  const [whatsappPhoneSaving, setWhatsappPhoneSaving] = useState(false);
+  const [whatsappPhoneNotice, setWhatsappPhoneNotice] = useState<string | null>(null);
 
   const [editWalletAdd, setEditWalletAdd] = useState('');
   const [editBlocked, setEditBlocked] = useState(false);
@@ -270,6 +285,9 @@ export function SupervisorDashboard({
   const [teacherName, setTeacherName] = useState('');
   const [teacherSubject, setTeacherSubject] = useState<string>(PLATFORM_SUBJECTS[0]);
   const [teacherImage, setTeacherImage] = useState('');
+  const [teacherTelegramSupport, setTeacherTelegramSupport] = useState('');
+  const [teacherTelegramDrafts, setTeacherTelegramDrafts] = useState<Record<string, string>>({});
+  const [savingTeacherTelegramId, setSavingTeacherTelegramId] = useState<string | null>(null);
   const [teacherGrades, setTeacherGrades] = useState<EducationalStage[]>([
     'الصف الثالث الثانوي',
   ]);
@@ -314,6 +332,12 @@ export function SupervisorDashboard({
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  useEffect(() => {
+    if (supportWhatsappPhone) {
+      setWhatsappPhoneDraft(supportWhatsappPhone);
+    }
+  }, [supportWhatsappPhone]);
 
   useEffect(() => {
     if (teachers.length > 0 && !teachers.some((t) => t.id === courseTeacherId)) {
@@ -419,16 +443,16 @@ export function SupervisorDashboard({
   }, [token]);
 
   useEffect(() => {
-    if (activeTab === 'students' || activeTab === 'low-attendance') {
+    if (activeTab === 'students' || activeTab === 'approvals' || activeTab === 'low-attendance') {
       loadStudents(true);
     }
     const handleFocus = () => {
-      if (activeTab === 'students' || activeTab === 'low-attendance') {
+      if (activeTab === 'students' || activeTab === 'approvals' || activeTab === 'low-attendance') {
         loadStudents(true);
       }
     };
     const intervalId = window.setInterval(() => {
-      if (activeTab === 'students' || activeTab === 'low-attendance') {
+      if (activeTab === 'students' || activeTab === 'approvals' || activeTab === 'low-attendance') {
         loadStudents(true);
       }
     }, 10000);
@@ -457,10 +481,24 @@ export function SupervisorDashboard({
 
   const filteredStudents = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const qPhoneDigits = normalizeDigits(searchQuery).replace(/[^0-9]/g, '');
+    const explicitPhoneDigits = normalizeDigits(phoneSearchQuery).replace(/[^0-9]/g, '');
+
     return students.filter((s) => {
       const devices = getStudentDevicesDisplay(s);
       if (multiDeviceOnly && devices.length <= 1) return false;
       const matchesStage = stageFilter === 'جميع المراحل' || s.stage === stageFilter;
+
+      const stuPhoneNorm = normalizeDigits(s.studentPhone).replace(/[^0-9]/g, '');
+      const parPhoneNorm = normalizeDigits(s.parentPhone).replace(/[^0-9]/g, '');
+
+      if (explicitPhoneDigits) {
+        const matchesExplicitPhone =
+          stuPhoneNorm.includes(explicitPhoneDigits) ||
+          parPhoneNorm.includes(explicitPhoneDigits);
+        if (!matchesExplicitPhone) return false;
+      }
+
       const matchesDevice = devices.some(
         (d) =>
           d.browser.toLowerCase().includes(q) ||
@@ -472,6 +510,8 @@ export function SupervisorDashboard({
         !q ||
         s.studentName.toLowerCase().includes(q) ||
         s.studentPhone.includes(q) ||
+        (qPhoneDigits.length >= 2 &&
+          (stuPhoneNorm.includes(qPhoneDigits) || parPhoneNorm.includes(qPhoneDigits))) ||
         s.parentName.toLowerCase().includes(q) ||
         s.parentPhone.includes(q) ||
         (s.parentJob ?? '').toLowerCase().includes(q) ||
@@ -480,7 +520,105 @@ export function SupervisorDashboard({
         matchesDevice;
       return matchesStage && matchesQuery;
     });
-  }, [students, searchQuery, stageFilter, multiDeviceOnly]);
+  }, [students, searchQuery, phoneSearchQuery, stageFilter, multiDeviceOnly]);
+
+  const computeStudentActivityDetails = (stu: StudentRecord) => {
+    const unlockedSet = new Set(stu.unlockedCourseIds);
+    const enrolledCourses = allCourses.filter((c) => unlockedSet.has(c.id));
+    const targetCourses =
+      enrolledCourses.length > 0
+        ? enrolledCourses
+        : allCourses.filter((c) => c.grade === stu.stage);
+
+    const openedLessons: Array<{
+      lessonId: string;
+      lessonTitle: string;
+      courseId: string;
+      courseTitle: string;
+      openedDate?: string;
+    }> = [];
+    const unopenedLessons: Array<{
+      lessonId: string;
+      lessonTitle: string;
+      courseId: string;
+      courseTitle: string;
+    }> = [];
+    const submittedExams: Array<{
+      lessonId: string;
+      lessonTitle: string;
+      courseId: string;
+      courseTitle: string;
+      scorePercent: number;
+      correctCount: number;
+      totalQuestions: number;
+      passed: boolean;
+      submittedAt: string;
+    }> = [];
+
+    const completedSet = new Set(stu.completedLessonIds ?? []);
+    const attendanceDates = stu.attendanceDates ?? {};
+    const examResults = stu.examResults ?? {};
+
+    // Check across all courses for any lesson the student opened or submitted an exam for
+    const allCoursesMap = new Map(allCourses.map((c) => [c.id, c]));
+    const visitedCourseIds = new Set<string>(targetCourses.map((c) => c.id));
+    for (const c of allCourses) {
+      for (const les of getCourseAllLessons(c)) {
+        if (completedSet.has(les.id) || attendanceDates[les.id] || examResults[les.id]) {
+          visitedCourseIds.add(c.id);
+        }
+      }
+    }
+
+    for (const cid of visitedCourseIds) {
+      const course = allCoursesMap.get(cid);
+      if (!course) continue;
+      for (const les of getCourseAllLessons(course)) {
+        const isOpened = completedSet.has(les.id) || Boolean(attendanceDates[les.id]);
+        if (isOpened) {
+          openedLessons.push({
+            lessonId: les.id,
+            lessonTitle: les.title,
+            courseId: course.id,
+            courseTitle: course.title,
+            openedDate: attendanceDates[les.id],
+          });
+        } else {
+          unopenedLessons.push({
+            lessonId: les.id,
+            lessonTitle: les.title,
+            courseId: course.id,
+            courseTitle: course.title,
+          });
+        }
+
+        const examRes = examResults[les.id];
+        if (examRes) {
+          submittedExams.push({
+            lessonId: les.id,
+            lessonTitle: les.title,
+            courseId: course.id,
+            courseTitle: course.title,
+            scorePercent: examRes.scorePercent,
+            correctCount: examRes.correctCount,
+            totalQuestions: examRes.totalQuestions,
+            passed: examRes.passed,
+            submittedAt: examRes.submittedAt,
+          });
+        }
+      }
+    }
+
+    openedLessons.sort((a, b) => (b.openedDate || '').localeCompare(a.openedDate || ''));
+    submittedExams.sort((a, b) => (b.submittedAt || '').localeCompare(a.submittedAt || ''));
+
+    return {
+      openedLessons,
+      unopenedLessons,
+      submittedExams,
+      lastOpenedLesson: openedLessons[0] ?? null,
+    };
+  };
 
   const renderDeviceIcon = (
     deviceType: NormalizedDeviceDisplay['deviceType'],
@@ -792,6 +930,7 @@ export function SupervisorDashboard({
         subject: teacherSubject,
         grades: teacherGrades,
         image: teacherImage,
+        telegramSupport: teacherTelegramSupport.trim(),
       });
       if (!res.ok) {
         setTeacherFeedback(res.error);
@@ -800,11 +939,54 @@ export function SupervisorDashboard({
       setTeacherName('');
       setTeacherSubject(PLATFORM_SUBJECTS[0]);
       setTeacherImage('');
+      setTeacherTelegramSupport('');
       setTeacherGrades(['الصف الثالث الثانوي']);
-      setTeacherFeedback('تمت إضافة المدرس بنجاح وظهوره في الصفحة الأولى.');
+      setTeacherFeedback('تمت إضافة المدرس ورقم الدعم العلمي على تليجرام بنجاح.');
       await onCatalogUpdated();
     } finally {
       setTeacherSaving(false);
+    }
+  };
+
+  const handleSaveTeacherTelegram = async (teacher: DynamicTeacher) => {
+    const draft = (teacherTelegramDrafts[teacher.id] ?? teacher.telegramSupport ?? '').trim();
+    setSavingTeacherTelegramId(teacher.id);
+    setTeacherFeedback('');
+    try {
+      const res = await apiUpdateTeacher(token, teacher.id, {
+        telegramSupport: draft,
+      });
+      if (!res.ok) {
+        setTeacherFeedback(res.error);
+        return;
+      }
+      setTeacherFeedback(`تم حفظ رقم/حساب الدعم العلمي لتليجرام للمدرس ${teacher.name} بنجاح.`);
+      await onCatalogUpdated();
+    } finally {
+      setSavingTeacherTelegramId(null);
+    }
+  };
+
+  const handleSaveSupportWhatsappPhone = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = normalizeDigits(whatsappPhoneDraft);
+    if (cleaned.length < 8) {
+      setWhatsappPhoneNotice('يرجى إدخال رقم هاتف صحيح لشحن المنصة.');
+      return;
+    }
+    setWhatsappPhoneSaving(true);
+    setWhatsappPhoneNotice(null);
+    try {
+      const res = await apiUpdateSupportWhatsappPhone(token, cleaned);
+      if (!res.ok) {
+        setWhatsappPhoneNotice(res.error);
+        return;
+      }
+      setWhatsappPhoneDraft(res.supportWhatsappPhone);
+      setWhatsappPhoneNotice('تم حفظ رقم واتساب ومكالمات المشرف لشحن المنصة بنجاح.');
+      await onCatalogUpdated();
+    } finally {
+      setWhatsappPhoneSaving(false);
     }
   };
 
@@ -1460,6 +1642,46 @@ export function SupervisorDashboard({
         </div>
       </div>
 
+      {/* Quick Supervisor Setting: WhatsApp & Call Phone for Charging Platform Wallet */}
+      <form
+        onSubmit={handleSaveSupportWhatsappPhone}
+        className="bg-white dark:bg-slate-900 rounded-xl border border-emerald-200 dark:border-emerald-900/70 p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4"
+      >
+        <div className="space-y-1 min-w-0">
+          <div className="flex items-center gap-2 text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
+            <Phone className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <span>رقم واتساب ومكالمات المشرف لشحن المنصة (يظهر أسفل الصفحة الأولى للطلاب)</span>
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            يتواصل الطلاب على هذا الرقم عبر واتساب أو الاتصال الهاتفي لشحن محفظة المنصة وتفعيل الكورسات.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <input
+            type="tel"
+            dir="ltr"
+            value={whatsappPhoneDraft}
+            onChange={(e) => setWhatsappPhoneDraft(e.target.value)}
+            placeholder="01022193514"
+            className="w-44 px-3 py-2 text-xs sm:text-sm font-mono bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600"
+          />
+          <button
+            type="submit"
+            disabled={whatsappPhoneSaving}
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors disabled:opacity-60 cursor-pointer"
+          >
+            <Save className="w-3.5 h-3.5" />
+            <span>{whatsappPhoneSaving ? 'جاري الحفظ...' : 'حفظ رقم الشحن'}</span>
+          </button>
+          {whatsappPhoneNotice && (
+            <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+              {whatsappPhoneNotice}
+            </span>
+          )}
+        </div>
+      </form>
+
       <div
         role="tablist"
         aria-label="أقسام الإدارة"
@@ -1481,11 +1703,33 @@ export function SupervisorDashboard({
         >
           <Users className="w-4 h-4" />
           <span>بيانات ومتابعة الطلاب</span>
-          {pendingStudents.length > 0 && (
-            <span className="px-1.5 py-0.5 text-[11px] font-bold bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300 rounded-md tabular-nums">
-              {pendingStudents.length}
-            </span>
-          )}
+        </button>
+
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'approvals'}
+          onClick={() => {
+            setActiveTab('approvals');
+            setEditingCourse(null);
+          }}
+          className={`inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            activeTab === 'approvals'
+              ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+          }`}
+        >
+          <UserCheck className="w-4 h-4 text-emerald-600" />
+          <span>الموافقات على تسجيل الطلاب الجدد</span>
+          <span
+            className={`px-1.5 py-0.5 text-[11px] font-bold rounded-md tabular-nums ${
+              pendingStudents.length > 0
+                ? 'bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            {pendingStudents.length}
+          </span>
         </button>
 
         <button
@@ -1640,6 +1884,27 @@ export function SupervisorDashboard({
             </div>
 
             <div>
+              <label
+                htmlFor="teacher-telegram-input"
+                className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
+              >
+                رقم أو معرف تليجرام للدعم العلمي للمدرس
+              </label>
+              <input
+                id="teacher-telegram-input"
+                type="text"
+                dir="ltr"
+                value={teacherTelegramSupport}
+                onChange={(e) => setTeacherTelegramSupport(e.target.value)}
+                placeholder="مثال: 01012345678 أو @TeacherSupport"
+                className="w-full px-3.5 py-2 text-sm font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+              />
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                يظهر للطلاب كزر تليجرام مخصص للدعم العلمي الخاص بهذا المدرس.
+              </p>
+            </div>
+
+            <div>
               <span className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2">
                 المراحل التي يدرسها
               </span>
@@ -1692,7 +1957,7 @@ export function SupervisorDashboard({
 
             {teachers.length === 0 ? (
               <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
-                لم تقم بإضافة مدرسين بعد. استخدم النموذج لإضافة أول مدرس بصورته واسمه ومادته.
+                لم تقم بإضافة مدرسين بعد. استخدم النموذج لإضافة أول مدرس بصورته واسمه ومادته ورقم الدعم العلمي.
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1700,6 +1965,7 @@ export function SupervisorDashboard({
                   const linkedCount = allCourses.filter(
                     (c) => c.instructorId === t.id
                   ).length;
+                  const tgDraft = teacherTelegramDrafts[t.id] ?? t.telegramSupport ?? '';
                   return (
                     <div
                       key={t.id}
@@ -1714,7 +1980,7 @@ export function SupervisorDashboard({
                             className="w-full h-full object-cover object-top"
                           />
                         </div>
-                        <div className="p-4 space-y-1.5">
+                        <div className="p-4 space-y-2">
                           <h3 className="text-base font-bold text-slate-900 dark:text-white">{t.name}</h3>
                           <div className="text-xs font-semibold text-blue-700 dark:text-blue-400">
                             مدرس مادة: {t.subject}
@@ -1722,6 +1988,47 @@ export function SupervisorDashboard({
                           <div className="text-xs text-slate-500 dark:text-slate-400">{t.grades.join(' · ')}</div>
                           <div className="text-xs font-medium text-slate-700 dark:text-slate-300 tabular-nums">
                             {linkedCount} كورس مربوط بالمدرس
+                          </div>
+
+                          {/* Telegram Scientific Support Field per Teacher */}
+                          <div className="pt-2 border-t border-slate-200/80 dark:border-slate-700/70 space-y-1.5">
+                            <label className="block text-[11px] font-semibold text-sky-700 dark:text-sky-400">
+                              تليجرام الدعم العلمي للمدرس
+                            </label>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                dir="ltr"
+                                value={tgDraft}
+                                onChange={(e) =>
+                                  setTeacherTelegramDrafts((prev) => ({
+                                    ...prev,
+                                    [t.id]: e.target.value,
+                                  }))
+                                }
+                                placeholder="رقم التليفون أو @username"
+                                className="flex-1 min-w-0 px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
+                              />
+                              <button
+                                type="button"
+                                disabled={savingTeacherTelegramId === t.id}
+                                onClick={() => void handleSaveTeacherTelegram(t)}
+                                className="px-2.5 py-1.5 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition-colors shrink-0 cursor-pointer"
+                              >
+                                {savingTeacherTelegramId === t.id ? '...' : 'حفظ'}
+                              </button>
+                            </div>
+                            {t.telegramSupport && (
+                              <a
+                                href={formatTelegramUrl(t.telegramSupport)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-600 dark:text-sky-400 hover:underline"
+                              >
+                                <Send className="w-3 h-3" />
+                                <span dir="ltr">{t.telegramSupport}</span>
+                              </a>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -3151,6 +3458,182 @@ export function SupervisorDashboard({
         </div>
       )}
 
+      {activeTab === 'approvals' && (
+        <div className="space-y-5">
+          {approvalFeedback && (
+            <div
+              className={`p-3.5 rounded-xl border text-xs sm:text-sm font-semibold flex items-center justify-between gap-3 ${
+                approvalFeedback.type === 'ok'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                  : 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-red-900 dark:text-red-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{approvalFeedback.text}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setApprovalFeedback(null)}
+                aria-label="إغلاق التنبيه"
+                className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-amber-300 dark:border-amber-700 overflow-hidden shadow-xs">
+            <div className="px-5 sm:px-6 py-4 bg-amber-50/90 dark:bg-amber-950/50 border-b border-amber-200 dark:border-amber-800 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <Clock className="w-5 h-5 text-amber-700 dark:text-amber-300 shrink-0" />
+                <div>
+                  <h2 className="text-base font-bold text-slate-900 dark:text-white">
+                    الموافقات على تسجيل الطلاب الجدد وتأكيد بيانات ولي الأمر
+                  </h2>
+                  <p className="text-xs text-slate-600 dark:text-slate-400">
+                    راجع بيانات الطالب واتصل بولي الأمر لتأكيد البيانات قبل الضغط على «موافقة وتفعيل الحساب».
+                  </p>
+                </div>
+              </div>
+              <span className="px-3 py-1 text-xs font-bold bg-amber-100 dark:bg-amber-900/70 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md tabular-nums">
+                {pendingStudents.length} طلب بانتظار المراجعة
+              </span>
+            </div>
+
+            {pendingStudents.length === 0 ? (
+              <div className="p-10 text-center space-y-2">
+                <UserCheck className="w-9 h-9 text-emerald-600 mx-auto" />
+                <div className="text-sm font-bold text-slate-900 dark:text-white">
+                  لا توجد طلبات تسجيل جديدة معلقة حاليًا
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  أي طالب يسجل حسابًا جديدًا سيظهر هنا بجميع بياناته وبيانات ولي الأمر للاتصال به وتأكيد الحساب.
+                </p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                {pendingStudents.map((stu) => {
+                  const isBusy = approvalActionLoadingId === stu.id;
+                  return (
+                    <div
+                      key={stu.id}
+                      className="p-5 sm:p-6 flex flex-col gap-4 hover:bg-slate-50/60 dark:hover:bg-slate-800/40"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          <span className="text-base font-bold text-slate-900 dark:text-white">
+                            {stu.studentName}
+                          </span>
+                          <span className="px-2.5 py-0.5 text-xs font-bold bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 rounded">
+                            بانتظار مكالمة التأكيد والموافقة
+                          </span>
+                          <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                            تاريخ الطلب: {new Date(stu.createdAt).toLocaleString('ar-EG', { dateStyle: 'short', timeStyle: 'short' })}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 bg-slate-50 dark:bg-slate-800/70 rounded-xl border border-slate-200 dark:border-slate-700 p-4 text-xs">
+                        <div>
+                          <div className="text-slate-500 dark:text-slate-400">اسم الطالب ورقم هاتفه</div>
+                          <div className="font-bold text-slate-900 dark:text-white mt-0.5">{stu.studentName}</div>
+                          <div className="font-mono font-bold text-blue-700 dark:text-blue-400 mt-0.5" dir="ltr">
+                            {stu.studentPhone}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-slate-500 dark:text-slate-400">بيانات ولي الأمر (للاتصال والتأكيد)</div>
+                          <div className="font-bold text-slate-900 dark:text-white mt-0.5">{stu.parentName}</div>
+                          <div className="font-mono font-bold text-emerald-700 dark:text-emerald-400 mt-0.5" dir="ltr">
+                            {stu.parentPhone}
+                          </div>
+                          <div className="text-slate-600 dark:text-slate-300 mt-0.5">
+                            مهنة ولي الأمر: <span className="font-semibold">{stu.parentJob || 'غير محددة'}</span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-slate-500 dark:text-slate-400">المرحلة الدراسية واسم الأم</div>
+                          <div className="font-bold text-slate-900 dark:text-white mt-0.5">
+                            {stu.stage} ({stu.specializationType}: {stu.specialization})
+                          </div>
+                          <div className="text-slate-600 dark:text-slate-300 mt-0.5">
+                            اسم الأم: <span className="font-semibold">{stu.motherName}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <a
+                            href={`tel:${stu.parentPhone}`}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors"
+                          >
+                            <Phone className="w-3.5 h-3.5" />
+                            <span>اتصال بولي الأمر لتأكيد البيانات ({stu.parentPhone})</span>
+                          </a>
+                          <a
+                            href={formatWhatsappUrl(
+                              stu.parentPhone,
+                              `أهلاً بحضرتك يا أستاذ ${stu.parentName}، مع حضرتك إدارة منصة Ezz Academy لتأكيد تسجيل حساب الطالب ${stu.studentName} بالمنصة.`
+                            )}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700 rounded-lg hover:bg-emerald-100 transition-colors"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" />
+                            <span>واتساب ولي الأمر</span>
+                          </a>
+                          <a
+                            href={`tel:${stu.studentPhone}`}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-200 transition-colors"
+                          >
+                            <Phone className="w-3.5 h-3.5" />
+                            <span>اتصال بالطالب</span>
+                          </a>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void handleSetApprovalStatus(stu, 'approved')}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors disabled:opacity-60 cursor-pointer"
+                          >
+                            <UserCheck className="w-4 h-4" />
+                            <span>موافقة وتفعيل الحساب</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void handleSetApprovalStatus(stu, 'rejected')}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-900 dark:text-amber-200 bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors disabled:opacity-60 cursor-pointer"
+                          >
+                            <UserX className="w-3.5 h-3.5" />
+                            <span>رفض الطلب</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void handleDeleteStudentRequest(stu)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 transition-colors disabled:opacity-60 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>حذف</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {activeTab === 'students' && (
         <>
           {approvalFeedback && (
@@ -3186,14 +3669,19 @@ export function SupervisorDashboard({
                       طلبات إنشاء الحسابات الجديدة (بانتظار موافقتك)
                     </h2>
                     <p className="text-xs text-slate-600 dark:text-slate-400">
-                      لا يمكن لأي طالب تسجيل الدخول أو استخدام المنصة قبل موافقتك على طلبه هنا.
+                      تأكد من بيانات الطالب واتصل بولي الأمر قبل الموافقة على الحساب.
                     </p>
                   </div>
                 </div>
-                <span className="px-2.5 py-1 text-xs font-bold bg-amber-100 dark:bg-amber-900/70 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md tabular-nums">
-                  {pendingStudents.length}{' '}
-                  {pendingStudents.length === 1 ? 'طلب جديد' : 'طلبات جديدة'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('approvals')}
+                    className="px-3 py-1.5 text-xs font-bold text-amber-900 dark:text-amber-100 bg-amber-200/80 dark:bg-amber-900/70 rounded-lg hover:bg-amber-300 cursor-pointer"
+                  >
+                    فتح صفحة الموافقات الكاملة ({pendingStudents.length})
+                  </button>
+                </div>
               </div>
 
               <div className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -3229,8 +3717,8 @@ export function SupervisorDashboard({
 
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
                           <span>
-                            ولي الأمر: {stu.parentName} (
-                            <span className="font-mono" dir="ltr">
+                            ولي الأمر: <strong className="text-slate-800 dark:text-slate-200">{stu.parentName}</strong> (
+                            <span className="font-mono font-bold text-emerald-700 dark:text-emerald-400" dir="ltr">
                               {stu.parentPhone}
                             </span>
                             )
@@ -3247,6 +3735,13 @@ export function SupervisorDashboard({
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <a
+                          href={`tel:${stu.parentPhone}`}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 transition-colors"
+                        >
+                          <Phone className="w-3.5 h-3.5" />
+                          <span>اتصال بولي الأمر</span>
+                        </a>
                         <button
                           type="button"
                           disabled={isBusy}
@@ -3303,17 +3798,32 @@ export function SupervisorDashboard({
             </div>
           )}
 
-          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
-            <div className="relative flex-1 max-w-md">
-              <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="ابحث بالاسم، الهاتف، أو نوع الجهاز/المتصفح..."
-                aria-label="بحث في الطلاب"
-                className="w-full pr-10 pl-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-              />
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 flex-1">
+              <div className="relative flex-1 min-w-[220px]">
+                <Phone className="w-4 h-4 text-blue-600 dark:text-blue-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="search"
+                  dir="ltr"
+                  value={phoneSearchQuery}
+                  onChange={(e) => setPhoneSearchQuery(e.target.value)}
+                  placeholder="بحث سريع برقم تليفون الطالب أو ولي الأمر..."
+                  aria-label="بحث برقم التليفون"
+                  className="w-full pr-10 pl-3 py-2 text-sm font-mono bg-blue-50/50 dark:bg-slate-800/90 border border-blue-300 dark:border-blue-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700 text-right"
+                />
+              </div>
+
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="أو ابحث بالاسم أو نوع الجهاز/المتصفح..."
+                  aria-label="بحث في الطلاب"
+                  className="w-full pr-10 pl-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                />
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -3431,7 +3941,7 @@ export function SupervisorDashboard({
                       const autoAtt = computeStudentAttendance(stu, allCourses);
                       const attendedDays = getDistinctAttendanceDays(stu.attendanceDates);
                       const studentDevices = getStudentDevicesDisplay(stu);
-                      const isMultiDevice = studentDevices.length > 1;
+                      const activity = computeStudentActivityDetails(stu);
                       return (
                         <tr key={stu.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/50 align-top">
                           <td className="py-4 px-4">
@@ -3452,9 +3962,9 @@ export function SupervisorDashboard({
                                   محظور
                                 </span>
                               )}
-                              {!stu.isBlocked && !stu.autoBlockExempt && studentDevices.length === 2 && (
-                                <span className="px-2 py-0.5 text-[11px] font-semibold bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 rounded">
-                                  إنذار حظر تلقائي
+                              {!stu.isBlocked && studentDevices.length === 2 && (
+                                <span className="px-2 py-0.5 text-[11px] font-semibold bg-blue-100 dark:bg-blue-950/70 text-blue-800 dark:text-blue-300 rounded">
+                                  جهازين (مسموح)
                                 </span>
                               )}
                               {stu.autoBlockExempt && (
@@ -3491,10 +4001,26 @@ export function SupervisorDashboard({
                               {stu.specializationType}: {stu.specialization}
                             </div>
                           </td>
-                          <td className="py-4 px-4 tabular-nums">
+                          <td className="py-4 px-4 tabular-nums min-w-[210px]">
                             <div className="font-semibold text-slate-900 dark:text-white">
                               حضور {autoAtt.rate}%
                             </div>
+                            <div className="flex flex-wrap items-center gap-1.5 mt-1 text-[11px]">
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-semibold">
+                                فتح {activity.openedLessons.length} حصة
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-semibold">
+                                سلّم {activity.submittedExams.length} امتحان
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 font-semibold">
+                                لم يفتح {activity.unopenedLessons.length}
+                              </span>
+                            </div>
+                            {activity.lastOpenedLesson && (
+                              <div className="text-[11px] text-emerald-700 dark:text-emerald-400 mt-1 truncate max-w-[220px]" title={activity.lastOpenedLesson.lessonTitle}>
+                                آخر حصة: {activity.lastOpenedLesson.lessonTitle}
+                              </div>
+                            )}
                             <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                               المحفظة: {stu.walletBalance ?? 0} ج.م
                             </div>
@@ -3513,12 +4039,11 @@ export function SupervisorDashboard({
                               <div className="space-y-1.5">
                                 <div className="flex flex-wrap items-center gap-1.5">
                                   <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
-                                    {studentDevices.length}{' '}
-                                    {studentDevices.length === 1 ? 'جهاز' : 'أجهزة'}
+                                    {studentDevices.length} / 2 جهاز مسموح
                                   </span>
-                                  {isMultiDevice && (
-                                    <span className="px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 rounded">
-                                      تعدد أجهزة
+                                  {studentDevices.length > 2 && (
+                                    <span className="px-1.5 py-0.5 text-[10px] font-bold bg-red-100 dark:bg-red-950/70 text-red-800 dark:text-red-300 border border-red-200 dark:border-red-800 rounded">
+                                      تجاوز الحد
                                     </span>
                                   )}
                                 </div>
@@ -3619,17 +4144,35 @@ export function SupervisorDashboard({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 bg-slate-50 dark:bg-slate-800/80 rounded-lg border border-slate-200 dark:border-slate-800 p-3.5 sm:p-4 text-xs">
                 <div className="min-w-0">
                   <span className="text-slate-500 dark:text-slate-400">رقم الطالب:</span>
-                  <div className="font-mono font-semibold text-slate-900 dark:text-white mt-0.5 break-all" dir="ltr">
-                    {selectedStudent.studentPhone}
+                  <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                    <span className="font-mono font-semibold text-slate-900 dark:text-white break-all" dir="ltr">
+                      {selectedStudent.studentPhone}
+                    </span>
+                    <a
+                      href={`tel:${selectedStudent.studentPhone}`}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold text-blue-700 dark:text-blue-300 bg-blue-100/80 dark:bg-blue-950/60 rounded hover:bg-blue-200"
+                    >
+                      <Phone className="w-3 h-3" />
+                      <span>اتصال</span>
+                    </a>
                   </div>
                 </div>
                 <div className="min-w-0">
                   <span className="text-slate-500 dark:text-slate-400">اسم ولي الأمر ورقمه:</span>
-                  <div className="font-semibold text-slate-900 dark:text-white mt-0.5 break-words">
-                    {selectedStudent.parentName} —{' '}
-                    <span className="font-mono inline-block" dir="ltr">
-                      {selectedStudent.parentPhone}
+                  <div className="font-semibold text-slate-900 dark:text-white mt-0.5 break-words flex flex-wrap items-center gap-2">
+                    <span>
+                      {selectedStudent.parentName} —{' '}
+                      <span className="font-mono inline-block" dir="ltr">
+                        {selectedStudent.parentPhone}
+                      </span>
                     </span>
+                    <a
+                      href={`tel:${selectedStudent.parentPhone}`}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 dark:text-emerald-300 bg-emerald-100/80 dark:bg-emerald-950/60 rounded hover:bg-emerald-200"
+                    >
+                      <Phone className="w-3 h-3" />
+                      <span>اتصال بولي الأمر</span>
+                    </a>
                   </div>
                 </div>
                 <div className="min-w-0">
@@ -3651,6 +4194,133 @@ export function SupervisorDashboard({
                   </div>
                 </div>
               </div>
+
+              {(() => {
+                const activity = computeStudentActivityDetails(selectedStudent);
+                return (
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/50 p-4 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h4 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                        <BookOpen className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                        <span>متابعة الحصص والامتحانات التفصيلية للطالب</span>
+                      </h4>
+                      {activity.lastOpenedLesson && (
+                        <span className="px-2.5 py-1 text-xs font-bold bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 rounded-md">
+                          آخر حصة فتحها: {activity.lastOpenedLesson.lessonTitle}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                      <div className="rounded-lg border border-emerald-200 dark:border-emerald-800/80 bg-white dark:bg-slate-900 p-3 space-y-2">
+                        <div className="flex items-center justify-between font-bold text-emerald-800 dark:text-emerald-300">
+                          <span>الحصص التي فتحها الطالب</span>
+                          <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/80 tabular-nums">
+                            {activity.openedLessons.length}
+                          </span>
+                        </div>
+                        {activity.openedLessons.length === 0 ? (
+                          <p className="text-slate-400 dark:text-slate-500 text-[11px]">
+                            لم يفتح الطالب أي حصة حتى الآن.
+                          </p>
+                        ) : (
+                          <ul className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                            {activity.openedLessons.map((item) => (
+                              <li
+                                key={`${item.courseTitle}-${item.lessonId}`}
+                                className="p-1.5 rounded bg-emerald-50/60 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/60"
+                              >
+                                <div className="font-semibold text-slate-900 dark:text-white">
+                                  {item.lessonTitle}
+                                </div>
+                                <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-between gap-1 mt-0.5">
+                                  <span className="truncate">{item.courseTitle}</span>
+                                  {item.openedDate && (
+                                    <span className="font-mono shrink-0" dir="ltr">
+                                      {item.openedDate}
+                                    </span>
+                                  )}
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+
+                      <div className="rounded-lg border border-blue-200 dark:border-blue-800/80 bg-white dark:bg-slate-900 p-3 space-y-2">
+                        <div className="flex items-center justify-between font-bold text-blue-800 dark:text-blue-300">
+                          <span>الامتحانات التي سلّمها</span>
+                          <span className="px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-950/80 tabular-nums">
+                            {activity.submittedExams.length}
+                          </span>
+                        </div>
+                        {activity.submittedExams.length === 0 ? (
+                          <p className="text-slate-400 dark:text-slate-500 text-[11px]">
+                            لم يقم الطالب بتسليم أي امتحان بعد.
+                          </p>
+                        ) : (
+                          <ul className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                            {activity.submittedExams.map((ex) => (
+                              <li
+                                key={ex.lessonId}
+                                className="p-1.5 rounded bg-blue-50/60 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/60"
+                              >
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="font-semibold text-slate-900 dark:text-white truncate">
+                                    {ex.lessonTitle}
+                                  </span>
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold tabular-nums shrink-0 ${
+                                      ex.passed
+                                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                                        : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                                    }`}
+                                  >
+                                    {ex.scorePercent}% ({ex.correctCount}/{ex.totalQuestions})
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                                  {ex.courseTitle}
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+
+                      <div className="rounded-lg border border-amber-200 dark:border-amber-800/80 bg-white dark:bg-slate-900 p-3 space-y-2">
+                        <div className="flex items-center justify-between font-bold text-amber-800 dark:text-amber-300">
+                          <span>الحصص التي لم يفتحها بعد</span>
+                          <span className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950/80 tabular-nums">
+                            {activity.unopenedLessons.length}
+                          </span>
+                        </div>
+                        {activity.unopenedLessons.length === 0 ? (
+                          <p className="text-emerald-600 dark:text-emerald-400 text-[11px] font-semibold">
+                            ممتاز! الطالب فتح جميع الحصص المتاحة له.
+                          </p>
+                        ) : (
+                          <ul className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                            {activity.unopenedLessons.map((item) => (
+                              <li
+                                key={`${item.courseTitle}-${item.lessonId}`}
+                                className="p-1.5 rounded bg-amber-50/50 dark:bg-amber-950/25 border border-amber-100 dark:border-amber-900/50"
+                              >
+                                <div className="font-semibold text-slate-900 dark:text-white">
+                                  {item.lessonTitle}
+                                </div>
+                                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                                  {item.courseTitle}
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <form onSubmit={handleSaveFollowUp} className="space-y-4">
                 <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/80 p-4 space-y-3">

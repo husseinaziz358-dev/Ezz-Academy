@@ -13,14 +13,19 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Home,
   ImagePlus,
+  LayoutDashboard,
   Lock,
   Menu,
+  MessageCircle,
   Moon,
+  Phone,
   Plus,
   RotateCcw,
   Save,
   Search,
+  Send,
   Sun,
   Upload,
   UserCheck,
@@ -63,7 +68,10 @@ import {
   apiSyncPendingStudentSession,
   apiSyncStudentProgress,
   apiUpdateHeroImage,
+  apiUpdateSupportWhatsappPhone,
   apiUploadMediaFile,
+  formatTelegramUrl,
+  formatWhatsappUrl,
   getOrCreateDeviceId,
   mergeCatalogCourses,
 } from './utils/apiClient';
@@ -91,6 +99,7 @@ interface SessionState {
   token: string;
   studentId: string | null;
   studentName: string;
+  studentAvatar: string;
   studentPhone: string;
   studentEmail: string;
   studentGrade: string;
@@ -118,6 +127,7 @@ const DEFAULT_SESSION: SessionState = {
   token: '',
   studentId: null,
   studentName: 'طالب Ezz Academy',
+  studentAvatar: '',
   studentPhone: '',
   studentEmail: '',
   studentGrade: 'الصف الثالث الثانوي',
@@ -179,6 +189,10 @@ export default function App() {
   const [customCourses, setCustomCourses] = useState<Course[]>([]);
   const [deletedCourseIds, setDeletedCourseIds] = useState<string[]>([]);
   const [heroImage, setHeroImage] = useState<string>('');
+  const [supportWhatsappPhone, setSupportWhatsappPhone] = useState<string>('01022193514');
+  const [editingWhatsappInline, setEditingWhatsappInline] = useState<boolean>(false);
+  const [whatsappInlineDraft, setWhatsappInlineDraft] = useState<string>('01022193514');
+  const [whatsappInlineSaving, setWhatsappInlineSaving] = useState<boolean>(false);
   const [showHeroEditorModal, setShowHeroEditorModal] = useState<boolean>(false);
   const [heroImageDraft, setHeroImageDraft] = useState<string>('');
   const [heroUploading, setHeroUploading] = useState<boolean>(false);
@@ -254,6 +268,26 @@ export default function App() {
     setCustomCourses(catalog.customCourses);
     setDeletedCourseIds(catalog.deletedCourseIds);
     setHeroImage(catalog.heroImage || '');
+    const nextPhone = catalog.supportWhatsappPhone || '01022193514';
+    setSupportWhatsappPhone(nextPhone);
+    setWhatsappInlineDraft(nextPhone);
+  };
+
+  const handleSaveWhatsappInline = async () => {
+    if (session.role !== 'supervisor' || whatsappInlineSaving) return;
+    const trimmed = whatsappInlineDraft.trim();
+    if (!trimmed) return;
+    setWhatsappInlineSaving(true);
+    try {
+      const res = await apiUpdateSupportWhatsappPhone(session.token, trimmed);
+      if (res.ok) {
+        setSupportWhatsappPhone(res.supportWhatsappPhone);
+        setWhatsappInlineDraft(res.supportWhatsappPhone);
+        setEditingWhatsappInline(false);
+      }
+    } finally {
+      setWhatsappInlineSaving(false);
+    }
   };
 
   const openHeroEditor = () => {
@@ -333,6 +367,7 @@ export default function App() {
         name: dynamic.name,
         subject: dynamic.subject,
         image: dynamic.image,
+        telegramSupport: dynamic.telegramSupport || '',
       };
     }
     const builtIn = getInstructorById(instructorId);
@@ -340,6 +375,7 @@ export default function App() {
       name: builtIn.name,
       subject: builtIn.specialty,
       image: builtIn.image,
+      telegramSupport: builtIn.telegramSupport || '',
     };
   };
 
@@ -359,6 +395,8 @@ export default function App() {
       allCourses
     );
     const payload = {
+      studentName: nextSession.studentName,
+      studentAvatar: nextSession.studentAvatar || '',
       unlockedCourseIds: nextSession.unlockedCourseIds,
       completedLessonIds: nextSession.completedLessonIds,
       notesByLesson: nextSession.notesByLesson,
@@ -440,6 +478,8 @@ export default function App() {
         }
         setSession((prev) => ({
           ...prev,
+          studentName: fresh.studentName || prev.studentName,
+          studentAvatar: fresh.studentAvatar ?? prev.studentAvatar ?? '',
           walletBalance: fresh.walletBalance ?? 0,
           autoBlockExempt: fresh.autoBlockExempt === true,
           unlockedCourseIds: fresh.unlockedCourseIds,
@@ -506,6 +546,8 @@ export default function App() {
     }
     setSession((prev) => ({
       ...prev,
+      studentName: fresh.studentName || prev.studentName,
+      studentAvatar: fresh.studentAvatar ?? prev.studentAvatar ?? '',
       walletBalance: fresh.walletBalance ?? 0,
       autoBlockExempt: fresh.autoBlockExempt === true,
       unlockedCourseIds: fresh.unlockedCourseIds,
@@ -695,6 +737,22 @@ export default function App() {
     });
   };
 
+  const handleUpdateStudentName = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    commitStudentSessionUpdate((prev) => ({
+      ...prev,
+      studentName: trimmed,
+    }));
+  };
+
+  const handleUpdateStudentAvatar = (avatarUrl: string) => {
+    commitStudentSessionUpdate((prev) => ({
+      ...prev,
+      studentAvatar: avatarUrl,
+    }));
+  };
+
   const handleStudentAuthenticated = (student: StudentRecord, token: string) => {
     if (student.approvalStatus === 'pending') {
       setBlockedBanner(
@@ -754,6 +812,7 @@ export default function App() {
       token,
       studentId: student.id,
       studentName: student.studentName,
+      studentAvatar: student.studentAvatar || '',
       studentPhone: student.studentPhone,
       studentEmail: student.studentEmail || auth.currentUser?.email || '',
       studentGrade: student.stage,
@@ -996,8 +1055,45 @@ export default function App() {
 
           <nav
             aria-label="التنقل الرئيسي"
-            className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600 dark:text-slate-300"
+            className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600 dark:text-slate-300"
           >
+            <button
+              type="button"
+              onClick={() => navigateTo('home')}
+              className={`inline-flex items-center gap-1.5 hover:text-slate-900 dark:hover:text-white hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                view === 'home' ? 'text-blue-700 dark:text-blue-400 font-bold' : ''
+              }`}
+            >
+              <Home className="w-4 h-4" />
+              <span>الصفحة الرئيسية</span>
+            </button>
+
+            {session.role === 'student' && (
+              <button
+                type="button"
+                onClick={() => navigateTo('dashboard')}
+                className={`inline-flex items-center gap-1.5 hover:text-slate-900 dark:hover:text-white hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  view === 'dashboard' ? 'text-blue-700 dark:text-blue-400 font-bold' : ''
+                }`}
+              >
+                <LayoutDashboard className="w-4 h-4" />
+                <span>لوحة التحكم</span>
+              </button>
+            )}
+
+            {session.role === 'supervisor' && (
+              <button
+                type="button"
+                onClick={() => navigateTo('supervisor')}
+                className={`inline-flex items-center gap-1.5 hover:text-slate-900 dark:hover:text-white hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  view === 'supervisor' ? 'text-blue-700 dark:text-blue-400 font-bold' : ''
+                }`}
+              >
+                <LayoutDashboard className="w-4 h-4" />
+                <span>لوحة المشرف</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => {
@@ -1005,7 +1101,7 @@ export default function App() {
                 navigateTo('courses');
               }}
               className={`hover:text-slate-900 dark:hover:text-white hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                view === 'courses' ? 'text-slate-900 dark:text-white font-semibold' : ''
+                view === 'courses' ? 'text-blue-700 dark:text-blue-400 font-bold' : ''
               }`}
             >
               الكورسات
@@ -1015,7 +1111,7 @@ export default function App() {
               type="button"
               onClick={() => navigateTo('subscriptions')}
               className={`hover:text-slate-900 dark:hover:text-white hover:underline underline-offset-8 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                view === 'subscriptions' ? 'text-slate-900 dark:text-white font-semibold' : ''
+                view === 'subscriptions' ? 'text-blue-700 dark:text-blue-400 font-bold' : ''
               }`}
             >
               اشتراكاتي مع المدرسين
@@ -1076,13 +1172,23 @@ export default function App() {
             <button
               type="button"
               onClick={handleHeaderPrimaryClick}
-              className="inline-flex items-center gap-1.5 px-2.5 sm:px-4 py-1.5 sm:py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              {session.role !== 'guest' && <UserCheck className="w-3.5 h-3.5 shrink-0" />}
+              {session.role === 'student' && session.studentAvatar ? (
+                <img
+                  src={session.studentAvatar}
+                  alt={session.studentName}
+                  className="w-5 h-5 rounded-full object-cover border border-white/60 shrink-0"
+                />
+              ) : (
+                session.role !== 'guest' && <UserCheck className="w-3.5 h-3.5 shrink-0" />
+              )}
               <span className="sm:hidden">
-                {session.role === 'guest' ? 'دخول' : 'حسابي'}
+                {session.role === 'guest' ? 'دخول' : 'لوحة التحكم'}
               </span>
-              <span className="hidden sm:inline">{headerPrimaryLabel}</span>
+              <span className="hidden sm:inline">
+                {session.role === 'student' ? `لوحة التحكم · ${studentFirstName}` : headerPrimaryLabel}
+              </span>
             </button>
 
             <button
@@ -1098,6 +1204,24 @@ export default function App() {
 
         {mobileNavOpen && (
           <div className="md:hidden border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-4 space-y-2">
+            <button
+              type="button"
+              onClick={() => navigateTo('home')}
+              className="flex items-center gap-2 w-full text-right px-3 py-2.5 text-sm font-semibold text-slate-800 dark:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+            >
+              <Home className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+              <span>الصفحة الرئيسية</span>
+            </button>
+            {session.role === 'student' && (
+              <button
+                type="button"
+                onClick={() => navigateTo('dashboard')}
+                className="flex items-center gap-2 w-full text-right px-3 py-2.5 text-sm font-semibold text-blue-700 dark:text-blue-400 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <LayoutDashboard className="w-4 h-4" />
+                <span>لوحة التحكم (الملف الشخصي والنتائج)</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -1120,7 +1244,7 @@ export default function App() {
               onClick={handleHeaderPrimaryClick}
               className="block w-full text-center px-4 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800"
             >
-              {headerPrimaryLabel}
+              {session.role === 'student' ? 'لوحة التحكم' : headerPrimaryLabel}
             </button>
             {session.role === 'student' && (
               <div className="pt-1">
@@ -1158,7 +1282,7 @@ export default function App() {
 
         {session.role === 'student' &&
           !session.autoBlockExempt &&
-          session.activeDeviceIds.length >= 2 &&
+          session.activeDeviceIds.length > 2 &&
           !dismissedAutoBlockWarning && (
             <div
               role="alert"
@@ -1167,18 +1291,18 @@ export default function App() {
               <div className="flex items-start sm:items-center gap-2.5 max-w-6xl mx-auto flex-1">
                 <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
                 <span>
-                  إنذار الحظر التلقائي: تم تسجيل دخول حسابك من{' '}
+                  تنبيه تعدد الأجهزة: تم تسجيل دخول حسابك من{' '}
                   <span className="font-bold tabular-nums">
                     {session.activeDeviceIds.length} أجهزة
                   </span>
-                  . الحد الأقصى المسموح به هو جهازان، وفي حال فتح الحساب من جهاز ثالث سيتم حظر الحساب تلقائيًا.
+                  . الحد الأقصى المسموح به هو جهازان فقط.
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() => setDismissedAutoBlockWarning(true)}
                 className="p-1 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60 rounded shrink-0"
-                aria-label="إغلاق إنذار الحظر التلقائي"
+                aria-label="إغلاق التنبيه"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1194,6 +1318,7 @@ export default function App() {
             teachers={teachers}
             customCourses={customCourses}
             deletedCourseIds={deletedCourseIds}
+            supportWhatsappPhone={supportWhatsappPhone}
             onCatalogUpdated={loadCatalog}
             onLogout={handleLogout}
           />
@@ -1202,6 +1327,7 @@ export default function App() {
             course={activeCourse}
             instructorName={resolveInstructorName(activeCourse.instructorId)}
             instructorImage={resolveInstructorInfo(activeCourse.instructorId).image}
+            instructorTelegramSupport={resolveInstructorInfo(activeCourse.instructorId).telegramSupport}
             isUnlocked={
               session.role === 'supervisor' ||
               session.unlockedCourseIds.includes(activeCourse.id)
@@ -1217,15 +1343,15 @@ export default function App() {
                 ? session.supervisorName || 'المشرف العام'
                 : session.studentName
             }
+            studentAvatar={session.studentAvatar}
+            onUpdateStudentAvatar={handleUpdateStudentAvatar}
             studentEmail={session.studentEmail || auth.currentUser?.email || ''}
             studentPhone={
               session.role === 'supervisor'
                 ? session.supervisorPhone
                 : session.studentPhone
             }
-            onUpdateStudentName={(name) =>
-              setSession((prev) => ({ ...prev, studentName: name }))
-            }
+            onUpdateStudentName={handleUpdateStudentName}
             onToggleLessonComplete={handleToggleLessonComplete}
             onMarkLessonComplete={handleMarkLessonComplete}
             onRecordLessonAttendance={handleRecordLessonAttendance}
@@ -1242,15 +1368,16 @@ export default function App() {
         ) : view === 'dashboard' ? (
           <ProgressDashboard
             studentName={session.studentName}
+            studentAvatar={session.studentAvatar}
             studentPhone={session.studentPhone}
             studentGrade={session.studentGrade}
             studentSpecialization={session.studentSpecialization}
             courses={allCourses}
             teachers={teachers}
             unlockedCourseIds={session.unlockedCourseIds}
-            onUpdateStudentName={(name) =>
-              setSession((prev) => ({ ...prev, studentName: name }))
-            }
+            activeDeviceCount={Math.max(1, session.activeDeviceIds.length)}
+            onUpdateStudentName={handleUpdateStudentName}
+            onUpdateStudentAvatar={handleUpdateStudentAvatar}
             completedLessonIds={session.completedLessonIds}
             attendanceDates={session.attendanceDates}
             notesByLesson={session.notesByLesson}
@@ -1387,7 +1514,7 @@ export default function App() {
                                   className="w-full h-full object-cover object-top"
                                 />
                               </div>
-                              <div className="min-w-0">
+                              <div className="min-w-0 flex-1">
                                 <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
                                   {inst.name}
                                 </div>
@@ -1395,6 +1522,17 @@ export default function App() {
                                   {inst.subject}
                                 </div>
                               </div>
+                              {inst.telegramSupport && (
+                                <a
+                                  href={formatTelegramUrl(inst.telegramSupport)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/60 border border-sky-200 dark:border-sky-800 rounded-lg hover:bg-sky-100 shrink-0"
+                                >
+                                  <Send className="w-3 h-3" />
+                                  <span>الدعم العلمي</span>
+                                </a>
+                              )}
                             </div>
 
                             <h3 className="text-base font-bold text-slate-900 dark:text-white leading-snug">
@@ -1638,7 +1776,7 @@ export default function App() {
                         </div>
 
                         <div className="px-6 pb-6 pt-2 space-y-4">
-                          <div className="flex items-center justify-between gap-2 text-xs pt-3 border-t border-slate-100 dark:border-slate-800">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs pt-3 border-t border-slate-100 dark:border-slate-800">
                             <button
                               type="button"
                               onClick={() => openTeacherCourses(course.instructorId)}
@@ -1660,6 +1798,24 @@ export default function App() {
                               {course.priceEgp} ج.م / الشهر
                             </span>
                           </div>
+
+                          {inst.telegramSupport && (
+                            <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-sky-50/80 dark:bg-sky-950/40 border border-sky-200/80 dark:border-sky-800/80 text-[11px]">
+                              <span className="text-sky-900 dark:text-sky-200 font-medium">
+                                الدعم العلمي للمادة (تليجرام):
+                              </span>
+                              <a
+                                href={formatTelegramUrl(inst.telegramSupport)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 font-mono font-bold text-sky-700 dark:text-sky-300 hover:underline"
+                                dir="ltr"
+                              >
+                                <Send className="w-3 h-3" />
+                                <span>{inst.telegramSupport}</span>
+                              </a>
+                            </div>
+                          )}
 
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <button
@@ -1883,6 +2039,22 @@ export default function App() {
                             <p className="text-xs text-slate-500 dark:text-slate-400">
                               {teacher.grades.join(' · ')}
                             </p>
+                            {teacher.telegramSupport && (
+                              <div className="pt-1.5">
+                                <a
+                                  href={formatTelegramUrl(teacher.telegramSupport)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 w-full justify-center text-xs font-bold text-sky-800 dark:text-sky-200 bg-sky-50 dark:bg-sky-950/60 border border-sky-200 dark:border-sky-800 rounded-lg hover:bg-sky-100 dark:hover:bg-sky-900/50 transition-colors"
+                                >
+                                  <Send className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 shrink-0" />
+                                  <span>الدعم العلمي (تليجرام):</span>
+                                  <span className="font-mono" dir="ltr">
+                                    {teacher.telegramSupport}
+                                  </span>
+                                </a>
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -1902,6 +2074,94 @@ export default function App() {
                         </div>
                       </article>
                     ))}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Bottom WhatsApp & Supervisor Contact Section for Platform Charging */}
+            <section className="py-10 bg-emerald-50/70 dark:bg-emerald-950/25 border-t border-emerald-200/80 dark:border-emerald-900/60">
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border-2 border-emerald-300 dark:border-emerald-800 p-5 sm:p-7 shadow-sm flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5">
+                  <div className="flex items-start gap-4">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                      <MessageCircle className="w-6 h-6" />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300">
+                        شحن محفظة المنصة وتفعيل الكورسات
+                      </div>
+                      <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
+                        تواصل مع المشرف عبر واتساب أو مكالمة لشحن رصيد المنصة
+                      </h3>
+                      <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
+                        لشحن محفظتك أو تفعيل الكورسات أو الاستفسارات الإدارية، تواصل مباشرة مع رقم المشرف:
+                        <span className="font-mono font-bold text-emerald-700 dark:text-emerald-400 mr-1.5" dir="ltr">
+                          {supportWhatsappPhone}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto justify-end">
+                    <a
+                      href={formatWhatsappUrl(
+                        supportWhatsappPhone,
+                        'السلام عليكم، أريد التواصل مع المشرف لشحن رصيد محفظتي على منصة Ezz Academy'
+                      )}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 px-5 py-3 text-xs sm:text-sm font-bold text-white bg-emerald-600 rounded-xl hover:bg-emerald-700 transition-colors shadow-xs"
+                    >
+                      <MessageCircle className="w-4 h-4 shrink-0" />
+                      <span>مراسلة المشرف واتساب لشحن المنصة</span>
+                    </a>
+
+                    <a
+                      href={`tel:${supportWhatsappPhone}`}
+                      className="inline-flex items-center justify-center gap-2 px-4 py-3 text-xs sm:text-sm font-bold text-emerald-800 dark:text-emerald-200 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700 rounded-xl hover:bg-emerald-100 transition-colors"
+                    >
+                      <Phone className="w-4 h-4 shrink-0" />
+                      <span className="font-mono" dir="ltr">
+                        {supportWhatsappPhone}
+                      </span>
+                    </a>
+
+                    {session.role === 'supervisor' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWhatsappInlineDraft(supportWhatsappPhone);
+                          setEditingWhatsappInline((v) => !v);
+                        }}
+                        className="px-3 py-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl hover:bg-slate-200 cursor-pointer"
+                      >
+                        تعديل الرقم
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {session.role === 'supervisor' && editingWhatsappInline && (
+                  <div className="mt-3 p-4 rounded-xl bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-800 flex flex-wrap items-center gap-2.5">
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                      رقم واتساب ومكالمات المشرف لشحن المنصة:
+                    </span>
+                    <input
+                      type="tel"
+                      dir="ltr"
+                      value={whatsappInlineDraft}
+                      onChange={(e) => setWhatsappInlineDraft(e.target.value)}
+                      className="px-3 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
+                    />
+                    <button
+                      type="button"
+                      disabled={whatsappInlineSaving}
+                      onClick={() => void handleSaveWhatsappInline()}
+                      className="px-3.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 cursor-pointer disabled:opacity-60"
+                    >
+                      {whatsappInlineSaving ? 'جاري الحفظ...' : 'حفظ الرقم'}
+                    </button>
                   </div>
                 )}
               </div>
@@ -1942,6 +2202,28 @@ export default function App() {
           <div className="tabular-nums">© 2026 Ezz Academy. جميع الحقوق محفوظة.</div>
         </div>
       </footer>
+
+      {/* Floating Bottom WhatsApp Button for Supervisor Top-Up */}
+      {view !== 'classroom' && (
+        <div className="fixed bottom-4 left-4 z-30 no-print">
+          <a
+            href={formatWhatsappUrl(
+              supportWhatsappPhone,
+              'السلام عليكم، أريد التواصل مع المشرف لشحن رصيد محفظتي على منصة Ezz Academy'
+            )}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`تواصل مع المشرف لشحن المنصة (${supportWhatsappPhone})`}
+            className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-lg border border-emerald-500 transition-transform hover:scale-105"
+          >
+            <MessageCircle className="w-4 h-4 shrink-0" />
+            <span>واتساب المشرف لشحن المنصة</span>
+            <span className="font-mono text-[11px] bg-emerald-700/80 px-1.5 py-0.5 rounded" dir="ltr">
+              {supportWhatsappPhone}
+            </span>
+          </a>
+        </div>
+      )}
 
       {showAuthModal && (
         <StudentAuthModal
@@ -1987,16 +2269,25 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 p-4 flex items-center justify-between gap-3">
+              <div className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 p-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="text-xs text-slate-600 dark:text-slate-400">الرصيد المتاح في محفظتك</div>
                   <div className="text-2xl font-bold text-blue-900 dark:text-blue-200 font-mono tabular-nums mt-0.5">
                     {session.walletBalance} ج.م
                   </div>
                 </div>
-                <div className="text-xs text-blue-800 dark:text-blue-300 max-w-[200px] leading-relaxed">
-                  يتم شحن الرصيد عبر إدارة المنصة لشراء الكورسات الخاصة بك.
-                </div>
+                <a
+                  href={formatWhatsappUrl(
+                    supportWhatsappPhone,
+                    `السلام عليكم، أنا الطالب ${session.studentName} (${session.studentPhone}) وأريد شحن محفظتي على منصة Ezz Academy.`
+                  )}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  <span>شحن المحفظة عبر واتساب المشرف ({supportWhatsappPhone})</span>
+                </a>
               </div>
 
               {purchaseFeedback && (

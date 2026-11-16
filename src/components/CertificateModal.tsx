@@ -1,4 +1,5 @@
-import { Award, Printer, X } from 'lucide-react';
+import { Award, Camera, Printer, Trash2, User, X } from 'lucide-react';
+import { ChangeEvent } from 'react';
 import { Course, getInstructorById } from '../data/academyData';
 
 interface CertificateModalProps {
@@ -8,9 +9,45 @@ interface CertificateModalProps {
   examScorePercent?: number;
   submittedAt?: string;
   studentName: string;
+  studentAvatar?: string;
   instructorName?: string;
   onUpdateStudentName: (name: string) => void;
+  onUpdateStudentAvatar?: (avatarUrl: string) => void;
   onClose: () => void;
+}
+
+function compressAvatarFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const maxDim = 320;
+          const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+          const w = Math.max(1, Math.round((img.width || maxDim) * scale));
+          const h = Math.max(1, Math.round((img.height || maxDim) * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(result);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL('image/jpeg', 0.85));
+        } catch {
+          resolve(result);
+        }
+      };
+      img.onerror = () => resolve(result);
+      img.src = result;
+    };
+    reader.onerror = () => reject(new Error('تعذر قراءة الصورة'));
+    reader.readAsDataURL(file);
+  });
 }
 
 export function CertificateModal({
@@ -20,8 +57,10 @@ export function CertificateModal({
   examScorePercent,
   submittedAt,
   studentName,
+  studentAvatar,
   instructorName,
   onUpdateStudentName,
+  onUpdateStudentAvatar,
   onClose,
 }: CertificateModalProps) {
   const resolvedInstructorName = instructorName || getInstructorById(course.instructorId).name;
@@ -35,6 +74,18 @@ export function CertificateModal({
   const codeSuffix = (lessonId || course.id).slice(-4).toUpperCase();
   const certificateCode = `EZZ-${codeSuffix}-2026`;
   const isLessonExamCert = Boolean(lessonTitle);
+
+  const handleAvatarUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !onUpdateStudentAvatar) return;
+    try {
+      const dataUrl = await compressAvatarFile(file);
+      onUpdateStudentAvatar(dataUrl);
+    } catch {
+      // ignore invalid file
+    }
+  };
 
   return (
     <div
@@ -62,18 +113,48 @@ export function CertificateModal({
             </button>
           </div>
 
-          <div className="mb-6 no-print">
-            <label htmlFor="cert-student-name" className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
-              الاسم الظاهر على الشهادة
-            </label>
-            <input
-              id="cert-student-name"
-              type="text"
-              value={studentName}
-              onChange={(e) => onUpdateStudentName(e.target.value)}
-              placeholder="أدخل اسمك الكامل"
-              className="w-full sm:w-80 px-3 py-2 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-            />
+          <div className="mb-6 flex flex-wrap items-end justify-between gap-4 no-print bg-slate-50 dark:bg-slate-950/60 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800">
+            <div className="w-full sm:w-72">
+              <label
+                htmlFor="cert-student-name"
+                className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5"
+              >
+                الاسم الظاهر على الشهادة
+              </label>
+              <input
+                id="cert-student-name"
+                type="text"
+                value={studentName}
+                onChange={(e) => onUpdateStudentName(e.target.value)}
+                placeholder="أدخل اسمك الكامل"
+                className="w-full px-3 py-2 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+              />
+            </div>
+
+            {onUpdateStudentAvatar && (
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors cursor-pointer">
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>{studentAvatar ? 'تغيير صورة الشهادة' : 'إضافة صورتك للشهادة'}</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleAvatarUpload}
+                    className="hidden"
+                  />
+                </label>
+                {studentAvatar && (
+                  <button
+                    type="button"
+                    onClick={() => onUpdateStudentAvatar('')}
+                    className="inline-flex items-center gap-1 px-2.5 py-2 text-xs font-medium text-red-600 dark:text-red-400 bg-white dark:bg-slate-900 border border-red-200 dark:border-red-900/60 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>إزالة</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="border-2 border-slate-900 dark:border-slate-700 rounded-lg p-5 sm:p-10 bg-slate-50 dark:bg-slate-950 text-center">
@@ -83,7 +164,25 @@ export function CertificateModal({
             <h4 className="text-xl sm:text-3xl font-bold text-slate-900 dark:text-white mb-4">
               {isLessonExamCert ? 'شهادة اجتياز امتحان الحصة' : 'شهادة إتمام مسار تدريبي'}
             </h4>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">تشهد منصة Ezz Academy بأن الطالب</p>
+
+            {/* Student Profile Avatar inside the Certificate */}
+            <div className="flex justify-center mb-3">
+              <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full overflow-hidden border-2 border-blue-700 dark:border-blue-400 bg-white dark:bg-slate-900 shadow-md flex items-center justify-center">
+                {studentAvatar ? (
+                  <img
+                    src={studentAvatar}
+                    alt={studentName || 'صورة الطالب'}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-blue-700 dark:text-blue-400">
+                    <User className="w-8 h-8 sm:w-10 sm:h-10" />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">تشهد منصة Ezz Academy بأن الطالب</p>
             <div className="text-xl sm:text-2xl font-bold text-blue-800 dark:text-blue-300 mb-4">
               {studentName.trim() || 'طالب Ezz Academy'}
             </div>

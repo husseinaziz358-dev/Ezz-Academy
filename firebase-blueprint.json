@@ -44,6 +44,11 @@
           "minLength": 2,
           "maxLength": 120
         },
+        "studentAvatar": {
+          "type": "string",
+          "description": "Optional profile image URL or data URL of the student.",
+          "maxLength": 1000000
+        },
         "stage": {
           "type": "string",
           "description": "Educational stage in Egyptian secondary or Baccalaureate system.",

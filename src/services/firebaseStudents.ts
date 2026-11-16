@@ -98,6 +98,7 @@ function mapFirestoreToStudentRecord(
   return {
     id: uid,
     studentName: String(profileData.studentName ?? ''),
+    studentAvatar: typeof profileData.studentAvatar === 'string' ? profileData.studentAvatar : '',
     studentPhone: String(contactData?.studentPhone ?? ''),
     studentEmail: typeof contactData?.email === 'string' ? contactData.email : '',
     parentName: String(contactData?.parentName ?? ''),
@@ -457,6 +458,8 @@ export async function createFirebaseStudentProfile(
 export async function syncFirebaseStudentProgress(
   uid: string,
   updates: {
+    studentName?: string;
+    studentAvatar?: string;
     unlockedCourseIds: string[];
     completedLessonIds: string[];
     notesByLesson: Record<string, string>;
@@ -493,6 +496,12 @@ export async function syncFirebaseStudentProgress(
     attendanceDates: cleanAttendanceDates,
     updatedAt: serverTimestamp(),
   };
+  if (typeof updates.studentName === 'string' && updates.studentName.trim().length >= 2) {
+    updatePayload.studentName = sanitizeText(updates.studentName, MAX_NAME_LENGTH);
+  }
+  if (typeof updates.studentAvatar === 'string' && updates.studentAvatar.length <= 1000000) {
+    updatePayload.studentAvatar = updates.studentAvatar;
+  }
   if (updates.examResults && typeof updates.examResults === 'object') {
     updatePayload.examResults = sanitizeExamResultsMap(updates.examResults);
   }

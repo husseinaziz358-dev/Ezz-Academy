@@ -124,6 +124,7 @@ export interface Instructor {
   gradesLabel: string;
   image: string;
   bio: string;
+  telegramSupport?: string;
 }
 
 export interface Course {

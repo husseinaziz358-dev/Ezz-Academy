@@ -52,6 +52,28 @@ export function normalizeDigits(input: string): string {
   return normalized;
 }
 
+export function formatWhatsappUrl(phoneInput: string, text?: string): string {
+  const digits = normalizeDigits(phoneInput).replace(/[^0-9]/g, '');
+  const intl = digits.startsWith('0') ? `20${digits.slice(1)}` : digits || '201022193514';
+  const query = text ? `?text=${encodeURIComponent(text)}` : '';
+  return `https://wa.me/${intl}${query}`;
+}
+
+export function formatTelegramUrl(rawInput: string): string {
+  const val = rawInput.trim();
+  if (!val) return '';
+  if (/^https?:\/\//i.test(val)) return val;
+  if (val.startsWith('t.me/')) return `https://${val}`;
+  if (val.startsWith('@')) return `https://t.me/${val.slice(1)}`;
+  const digitsOnly = normalizeDigits(val).replace(/[^0-9+]/g, '');
+  if (/^\+?[0-9]{8,15}$/.test(digitsOnly)) {
+    const clean = digitsOnly.replace(/^\+/, '');
+    const intl = clean.startsWith('0') ? `+20${clean.slice(1)}` : `+${clean}`;
+    return `https://t.me/${intl}`;
+  }
+  return `https://t.me/${val.replace(/^@/, '')}`;
+}
+
 function pureSha256Hex(ascii: string): string {
   const rightRotate = (value: number, amount: number) =>
     (value >>> amount) | (value << (32 - amount));
@@ -496,21 +518,29 @@ export async function apiRegisterStudent(payload: {
   if (normalizedPayload.studentPhone === SUPERVISOR_PHONE) {
     return { ok: false, error: 'هذا الرقم مسجل بالفعل في النظام.' };
   }
-  const duplicate = list.find((s) => s.studentPhone === normalizedPayload.studentPhone);
+  const duplicate = list.find(
+    (s) => normalizeDigits(s.studentPhone) === normalizedPayload.studentPhone
+  );
   if (duplicate) {
     if (duplicate.approvalStatus === 'pending') {
       return {
         ok: false,
-        error: 'طلب إنشاء الحساب لهذا الرقم قيد المراجعة بالفعل في انتظار موافقة المشرف.',
+        error:
+          'لا يمكن إنشاء أكثر من حساب بنفس رقم الهاتف. يوجد طلب تسجيل لهذا الرقم قيد المراجعة في انتظار موافقة المشرف.',
       };
     }
     if (duplicate.approvalStatus === 'rejected') {
       return {
         ok: false,
-        error: 'تم رفض طلب إنشاء الحساب لهذا الرقم من قِبل المشرف.',
+        error:
+          'لا يمكن إنشاء حساب جديد بهذا الرقم؛ تم رفض طلب التسجيل السابق من قِبل المشرف.',
       };
     }
-    return { ok: false, error: 'رقم الطالب مسجل ومفعل بالفعل. يمكنك تسجيل الدخول مباشرة.' };
+    return {
+      ok: false,
+      error:
+        'لا يمكن إنشاء أكثر من حساب بنفس رقم الهاتف. هذا الرقم مسجل ومفعل بالفعل، يمكنك تسجيل الدخول مباشرة.',
+    };
   }
   const now = new Date().toISOString();
   const passwordHash = await sha256Hex(payload.password);
@@ -786,6 +816,8 @@ export async function apiSyncStudentProgress(
   studentId: string,
   token: string,
   updates: {
+    studentName?: string;
+    studentAvatar?: string;
     unlockedCourseIds: string[];
     completedLessonIds: string[];
     notesByLesson: Record<string, string>;
@@ -1112,6 +1144,7 @@ interface LocalCatalog {
   customCourses: Course[];
   deletedCourseIds: string[];
   heroImage?: string;
+  supportWhatsappPhone?: string;
 }
 
 function getLocalCatalog(): LocalCatalog {
@@ -1126,12 +1159,22 @@ function getLocalCatalog(): LocalCatalog {
           ? parsed.deletedCourseIds
           : [],
         heroImage: typeof parsed.heroImage === 'string' ? parsed.heroImage : '',
+        supportWhatsappPhone:
+          typeof parsed.supportWhatsappPhone === 'string' && parsed.supportWhatsappPhone.trim()
+            ? parsed.supportWhatsappPhone.trim()
+            : SUPERVISOR_PHONE,
       };
     }
   } catch {
     // Ignore storage read error
   }
-  return { teachers: [], customCourses: [], deletedCourseIds: [], heroImage: '' };
+  return {
+    teachers: [],
+    customCourses: [],
+    deletedCourseIds: [],
+    heroImage: '',
+    supportWhatsappPhone: SUPERVISOR_PHONE,
+  };
 }
 
 function saveLocalCatalog(catalog: LocalCatalog) {
@@ -1154,6 +1197,11 @@ export async function apiFetchAcademyCatalog(): Promise<LocalCatalog> {
         ? serverRes.data.deletedCourseIds
         : [],
       heroImage: typeof serverRes.data.heroImage === 'string' ? serverRes.data.heroImage : '',
+      supportWhatsappPhone:
+        typeof serverRes.data.supportWhatsappPhone === 'string' &&
+        serverRes.data.supportWhatsappPhone.trim()
+          ? serverRes.data.supportWhatsappPhone.trim()
+          : SUPERVISOR_PHONE,
     };
   }
   return getLocalCatalog();
@@ -1166,6 +1214,7 @@ export async function apiAddTeacher(
     subject: string;
     grades: EducationalStage[];
     image: string;
+    telegramSupport?: string;
   }
 ): Promise<{ ok: true; teacher: DynamicTeacher } | { ok: false; error: string }> {
   const serverRes = await tryServerJson<{ teacher?: DynamicTeacher; error?: string }>(
@@ -1193,11 +1242,61 @@ export async function apiAddTeacher(
     subject: payload.subject.trim(),
     grades: payload.grades.length > 0 ? payload.grades : ['الصف الثالث الثانوي'],
     image: payload.image || '/src/assets/images/hero_academy_studio_1794779037349.jpg',
+    telegramSupport: payload.telegramSupport?.trim() || '',
     createdAt: new Date().toISOString(),
   };
   catalog.teachers.push(teacher);
   saveLocalCatalog(catalog);
   return { ok: true, teacher };
+}
+
+export async function apiUpdateTeacher(
+  token: string,
+  teacherId: string,
+  payload: {
+    name?: string;
+    subject?: string;
+    grades?: EducationalStage[];
+    image?: string;
+    telegramSupport?: string;
+  }
+): Promise<{ ok: true; teacher: DynamicTeacher } | { ok: false; error: string }> {
+  const serverRes = await tryServerJson<{ teacher?: DynamicTeacher; error?: string }>(
+    `/api/supervisor/teachers/${teacherId}`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (serverRes) {
+    if (!serverRes.ok || !serverRes.data.teacher) {
+      return { ok: false, error: serverRes.data.error || 'تعذر تحديث بيانات المدرس.' };
+    }
+    return { ok: true, teacher: serverRes.data.teacher };
+  }
+
+  const catalog = getLocalCatalog();
+  const idx = catalog.teachers.findIndex((t) => t.id === teacherId);
+  if (idx === -1) return { ok: false, error: 'المدرس غير موجود.' };
+  const existing = catalog.teachers[idx];
+  const updated: DynamicTeacher = {
+    ...existing,
+    name: payload.name?.trim() || existing.name,
+    subject: payload.subject?.trim() || existing.subject,
+    grades: payload.grades && payload.grades.length > 0 ? payload.grades : existing.grades,
+    image: payload.image?.trim() || existing.image,
+    telegramSupport:
+      typeof payload.telegramSupport === 'string'
+        ? payload.telegramSupport.trim()
+        : existing.telegramSupport,
+  };
+  catalog.teachers[idx] = updated;
+  saveLocalCatalog(catalog);
+  return { ok: true, teacher: updated };
 }
 
 export async function apiDeleteTeacher(token: string, teacherId: string): Promise<boolean> {
@@ -1563,4 +1662,43 @@ export async function apiUpdateHeroImage(
   catalog.heroImage = cleanHero;
   saveLocalCatalog(catalog);
   return { ok: true, heroImage: cleanHero };
+}
+
+export async function apiUpdateSupportWhatsappPhone(
+  token: string,
+  supportWhatsappPhone: string
+): Promise<{ ok: true; supportWhatsappPhone: string } | { ok: false; error: string }> {
+  const cleanPhone = normalizeDigits(supportWhatsappPhone);
+  const serverRes = await tryServerJson<{
+    ok?: boolean;
+    supportWhatsappPhone?: string;
+    error?: string;
+  }>('/api/supervisor/whatsapp-phone', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ supportWhatsappPhone: cleanPhone }),
+  });
+  if (serverRes) {
+    if (!serverRes.ok) {
+      return {
+        ok: false,
+        error: serverRes.data.error || 'تعذر تحديث رقم واتساب شحن المنصة.',
+      };
+    }
+    return {
+      ok: true,
+      supportWhatsappPhone:
+        typeof serverRes.data.supportWhatsappPhone === 'string'
+          ? serverRes.data.supportWhatsappPhone
+          : cleanPhone,
+    };
+  }
+
+  const catalog = getLocalCatalog();
+  catalog.supportWhatsappPhone = cleanPhone;
+  saveLocalCatalog(catalog);
+  return { ok: true, supportWhatsappPhone: cleanPhone };
 }

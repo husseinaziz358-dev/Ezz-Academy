@@ -61,6 +61,7 @@ export interface StudentNotificationRecord {
 export interface StudentRecord {
   id: string;
   studentName: string;
+  studentAvatar?: string;
   studentPhone: string;
   parentName: string;
   parentPhone: string;
@@ -250,6 +251,7 @@ interface DynamicTeacherRecord {
   subject: string;
   grades: string[];
   image: string;
+  telegramSupport?: string;
   createdAt: string;
 }
 
@@ -315,6 +317,7 @@ interface AcademyCatalogDb {
   customCourses: CustomCourseRecord[];
   deletedCourseIds: string[];
   heroImage?: string;
+  supportWhatsappPhone?: string;
 }
 
 async function ensureCatalogDb(): Promise<AcademyCatalogDb> {
@@ -327,6 +330,10 @@ async function ensureCatalogDb(): Promise<AcademyCatalogDb> {
       customCourses: Array.isArray(parsed.customCourses) ? parsed.customCourses : [],
       deletedCourseIds: Array.isArray(parsed.deletedCourseIds) ? parsed.deletedCourseIds : [],
       heroImage: typeof parsed.heroImage === 'string' ? parsed.heroImage : '',
+      supportWhatsappPhone:
+        typeof parsed.supportWhatsappPhone === 'string' && parsed.supportWhatsappPhone.trim()
+          ? parsed.supportWhatsappPhone.trim()
+          : SUPERVISOR_PHONE,
     };
   } catch {
     const empty: AcademyCatalogDb = {
@@ -334,6 +341,7 @@ async function ensureCatalogDb(): Promise<AcademyCatalogDb> {
       customCourses: [],
       deletedCourseIds: [],
       heroImage: '',
+      supportWhatsappPhone: SUPERVISOR_PHONE,
     };
     await fs.writeFile(CATALOG_FILE, JSON.stringify(empty, null, 2), 'utf-8');
     return empty;
@@ -603,23 +611,27 @@ async function startServer() {
       }
 
       const students = await ensureDb();
-      const duplicate = students.find((s) => s.studentPhone === studentPhone);
+      const duplicate = students.find(
+        (s) => normalizePhone(s.studentPhone) === studentPhone
+      );
       if (duplicate) {
         if (duplicate.approvalStatus === 'pending') {
           res.status(409).json({
             error:
-              'طلب إنشاء الحساب لهذا الرقم قيد المراجعة بالفعل في انتظار موافقة المشرف.',
+              'لا يمكن إنشاء أكثر من حساب بنفس رقم الهاتف. يوجد طلب تسجيل لهذا الرقم قيد المراجعة في انتظار موافقة المشرف.',
           });
           return;
         }
         if (duplicate.approvalStatus === 'rejected') {
           res.status(403).json({
-            error: 'تم رفض طلب إنشاء الحساب لهذا الرقم من قِبل المشرف.',
+            error:
+              'لا يمكن إنشاء حساب جديد بهذا الرقم؛ تم رفض طلب التسجيل السابق من قِبل المشرف.',
           });
           return;
         }
         res.status(409).json({
-          error: 'رقم الطالب مسجل ومفعل بالفعل. يمكنك تسجيل الدخول مباشرة.',
+          error:
+            'لا يمكن إنشاء أكثر من حساب بنفس رقم الهاتف. هذا الرقم مسجل ومفعل بالفعل، يمكنك تسجيل الدخول مباشرة.',
         });
         return;
       }
@@ -738,7 +750,9 @@ async function startServer() {
         return;
       }
 
-      const existingByPhone = students.find((s) => s.studentPhone === studentPhone);
+      const existingByPhone = students.find(
+        (s) => normalizePhone(s.studentPhone) === studentPhone
+      );
       if (existingByPhone) {
         if (existingByPhone.approvalStatus === 'pending') {
           res.json({
@@ -749,7 +763,7 @@ async function startServer() {
           return;
         }
         res.status(409).json({
-          error: 'رقم الطالب مسجل بالفعل. يمكنك تسجيل الدخول مباشرة.',
+          error: 'لا يمكن إنشاء أكثر من حساب بنفس رقم الهاتف. هذا الرقم مسجل بالفعل.',
         });
         return;
       }
@@ -840,7 +854,7 @@ async function startServer() {
           : [];
         const [students, catalog] = await Promise.all([ensureDb(), ensureCatalogDb()]);
         const existingIds = new Set(students.map((s) => s.id));
-        const existingPhones = new Set(students.map((s) => s.studentPhone));
+        const existingPhones = new Set(students.map((s) => normalizePhone(s.studentPhone)));
         let importedCount = 0;
 
         for (const item of incomingList) {
@@ -1023,8 +1037,19 @@ async function startServer() {
       );
       const policy = evaluateMultiDevicePolicy(existing, mergedDevices.activeDeviceIds);
 
+      const nextStudentName =
+        typeof req.body?.studentName === 'string' && req.body.studentName.trim().length >= 2
+          ? req.body.studentName.trim().slice(0, 120)
+          : existing.studentName;
+      const nextStudentAvatar =
+        typeof req.body?.studentAvatar === 'string' && req.body.studentAvatar.length <= 1_000_000
+          ? req.body.studentAvatar
+          : existing.studentAvatar ?? '';
+
       const updated: StudentRecord = {
         ...existing,
+        studentName: nextStudentName,
+        studentAvatar: nextStudentAvatar,
         unlockedCourseIds: nextUnlocked,
         completedLessonIds: nextCompleted,
         quizAnswers:
@@ -1522,12 +1547,13 @@ async function startServer() {
     }
   });
 
-  // Admin: add a teacher with photo, name, subject, and grades
+  // Admin: add a teacher with photo, name, subject, grades, and telegramSupport
   app.post('/api/supervisor/teachers', requireSupervisor, async (req: Request, res: Response) => {
     try {
       const name = String(req.body?.name ?? '').trim();
       const subject = String(req.body?.subject ?? '').trim();
       const image = String(req.body?.image ?? '').trim();
+      const telegramSupport = String(req.body?.telegramSupport ?? '').trim().slice(0, 160);
       const grades = Array.isArray(req.body?.grades)
         ? req.body.grades.map((g: unknown) => String(g).trim()).filter(Boolean)
         : [];
@@ -1544,6 +1570,7 @@ async function startServer() {
         subject,
         grades: grades.length > 0 ? grades : ['الصف الثالث الثانوي'],
         image: image || '/src/assets/images/hero_academy_studio_1794779037349.jpg',
+        telegramSupport,
         createdAt: new Date().toISOString(),
       };
       catalog.teachers.push(teacher);
@@ -1554,6 +1581,58 @@ async function startServer() {
       res.status(500).json({ error: 'تعذر إضافة المدرس.' });
     }
   });
+
+  app.put(
+    '/api/supervisor/teachers/:id',
+    requireSupervisor,
+    async (req: Request, res: Response) => {
+      try {
+        const teacherId = req.params.id;
+        const catalog = await ensureCatalogDb();
+        const idx = catalog.teachers.findIndex((t) => t.id === teacherId);
+        if (idx === -1) {
+          res.status(404).json({ error: 'المدرس غير موجود.' });
+          return;
+        }
+        const existing = catalog.teachers[idx];
+        const nextName =
+          typeof req.body?.name === 'string' && req.body.name.trim()
+            ? req.body.name.trim()
+            : existing.name;
+        const nextSubject =
+          typeof req.body?.subject === 'string' && req.body.subject.trim()
+            ? req.body.subject.trim()
+            : existing.subject;
+        const nextImage =
+          typeof req.body?.image === 'string' && req.body.image.trim()
+            ? req.body.image.trim()
+            : existing.image;
+        const nextGrades =
+          Array.isArray(req.body?.grades) && req.body.grades.length > 0
+            ? req.body.grades.map((g: unknown) => String(g).trim()).filter(Boolean)
+            : existing.grades;
+        const nextTelegram =
+          typeof req.body?.telegramSupport === 'string'
+            ? req.body.telegramSupport.trim().slice(0, 160)
+            : existing.telegramSupport ?? '';
+
+        const updated: DynamicTeacherRecord = {
+          ...existing,
+          name: nextName,
+          subject: nextSubject,
+          image: nextImage,
+          grades: nextGrades,
+          telegramSupport: nextTelegram,
+        };
+        catalog.teachers[idx] = updated;
+        await saveCatalogDb(catalog);
+        res.json({ teacher: updated });
+      } catch (err) {
+        console.error('Update teacher error:', err);
+        res.status(500).json({ error: 'تعذر تحديث بيانات المدرس.' });
+      }
+    }
+  );
 
   app.delete(
     '/api/supervisor/teachers/:id',
@@ -1906,6 +1985,27 @@ async function startServer() {
       } catch (err) {
         console.error('Update hero image error:', err);
         res.status(500).json({ error: 'تعذر تحديث صورة الصفحة الرئيسية.' });
+      }
+    }
+  );
+
+  app.put(
+    '/api/supervisor/whatsapp-phone',
+    requireSupervisor,
+    async (req: Request, res: Response) => {
+      try {
+        const rawPhone = normalizePhone(String(req.body?.supportWhatsappPhone ?? ''));
+        if (rawPhone.length < 8 || rawPhone.length > 24) {
+          res.status(400).json({ error: 'يرجى إدخال رقم هاتف صحيح للتواصل وشحن المنصة.' });
+          return;
+        }
+        const catalog = await ensureCatalogDb();
+        catalog.supportWhatsappPhone = rawPhone;
+        await saveCatalogDb(catalog);
+        res.json({ ok: true, supportWhatsappPhone: catalog.supportWhatsappPhone });
+      } catch (err) {
+        console.error('Update whatsapp phone error:', err);
+        res.status(500).json({ error: 'تعذر تحديث رقم واتساب ومكالمات شحن المنصة.' });
       }
     }
   );
