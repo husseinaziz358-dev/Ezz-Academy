@@ -774,6 +774,38 @@ export async function apiDeleteSupervisorStudent(
   return true;
 }
 
+export async function apiDeleteOwnStudentAccount(
+  studentId: string,
+  token: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!token.startsWith('local-')) {
+    const serverRes = await tryServerJson<{ ok?: boolean; error?: string }>(
+      `/api/students/${studentId}`,
+      {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+    if (serverRes) {
+      if (serverRes.ok || serverRes.status === 404) {
+        const list = getLocalStudents();
+        if (list.some((s) => s.id === studentId)) {
+          saveLocalStudents(list.filter((s) => s.id !== studentId));
+        }
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        error: serverRes.data.error || 'تعذر حذف الحساب نهائيًا.',
+      };
+    }
+  }
+
+  const list = getLocalStudents();
+  saveLocalStudents(list.filter((s) => s.id !== studentId));
+  return { ok: true };
+}
+
 export async function apiSyncStudentProgress(
   studentId: string,
   token: string,
@@ -1227,35 +1259,60 @@ export function mergeCatalogCourses(
 export async function apiUploadMediaFile(
   token: string,
   file: File
-): Promise<{ ok: true; url: string; fileName: string } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; url: string; fileName: string; fileType: 'pdf' | 'file'; mimeType: string }
+  | { ok: false; error: string }
+> {
+  const isPdfFile =
+    file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+  const detectedMime = file.type || (isPdfFile ? 'application/pdf' : 'application/octet-stream');
+
   try {
     const res = await fetch('/api/supervisor/upload', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         'x-file-name': encodeURIComponent(file.name),
-        'Content-Type': file.type || 'application/octet-stream',
+        'Content-Type': detectedMime,
       },
       body: file,
     });
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
-      const data = (await res.json()) as { url?: string; fileName?: string; error?: string };
+      const data = (await res.json()) as {
+        url?: string;
+        fileName?: string;
+        fileType?: 'pdf' | 'file';
+        mimeType?: string;
+        error?: string;
+      };
       if (!res.ok || !data.url) {
         return { ok: false, error: data.error || 'تعذر رفع الملف على الخادم.' };
       }
-      return { ok: true, url: data.url, fileName: data.fileName || file.name };
+      return {
+        ok: true,
+        url: data.url,
+        fileName: data.fileName || file.name,
+        fileType: data.fileType || (isPdfFile ? 'pdf' : 'file'),
+        mimeType: data.mimeType || detectedMime,
+      };
     }
   } catch {
     // Fall through to static preview fallback below
   }
 
   // Static preview fallback when Express server is unavailable
-  if (file.size <= 1.5 * 1024 * 1024) {
+  if (file.size <= (isPdfFile ? 4 * 1024 * 1024 : 1.5 * 1024 * 1024)) {
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = () => {
-        resolve({ ok: true, url: String(reader.result), fileName: file.name });
+        resolve({
+          ok: true,
+          url: String(reader.result),
+          fileName: file.name,
+          fileType: isPdfFile ? 'pdf' : 'file',
+          mimeType: detectedMime,
+        });
       };
       reader.onerror = () => {
         resolve({ ok: false, error: 'تعذر قراءة الملف المختار.' });
@@ -1265,7 +1322,13 @@ export async function apiUploadMediaFile(
   }
 
   const blobUrl = URL.createObjectURL(file);
-  return { ok: true, url: blobUrl, fileName: file.name };
+  return {
+    ok: true,
+    url: blobUrl,
+    fileName: file.name,
+    fileType: isPdfFile ? 'pdf' : 'file',
+    mimeType: detectedMime,
+  };
 }
 
 export async function apiAddCourse(

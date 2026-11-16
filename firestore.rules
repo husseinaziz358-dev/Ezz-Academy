@@ -242,7 +242,7 @@ service cloud.firestore {
             ])
           )
         );
-      allow delete: if isValidId(studentUid) && isAdmin();
+      allow delete: if isValidId(studentUid) && (isOwner(studentUid) || isAdmin());
 
       match /private/{docId} {
         allow get: if isValidId(studentUid) && docId == 'contact' && (isOwner(studentUid) || isAdmin());
@@ -272,7 +272,7 @@ service cloud.firestore {
             'updatedAt'
           ])
           && get(/databases/$(database)/documents/students/$(studentUid)).data.uid == studentUid;
-        allow delete: if isValidId(studentUid) && docId == 'contact' && isAdmin();
+        allow delete: if isValidId(studentUid) && docId == 'contact' && (isOwner(studentUid) || isAdmin());
       }
 
       match /notifications/{notifId} {
@@ -302,7 +302,7 @@ service cloud.firestore {
               && incoming().diff(existing()).affectedKeys().hasOnly(['read'])
             )
           );
-        allow delete: if isValidId(studentUid) && isValidId(notifId) && isAdmin();
+        allow delete: if isValidId(studentUid) && isValidId(notifId) && (isOwner(studentUid) || isAdmin());
       }
     }
   }

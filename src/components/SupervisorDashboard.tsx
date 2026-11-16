@@ -85,6 +85,14 @@ import {
 } from '../services/firebaseStudents';
 import { getStudentDevicesDisplay, NormalizedDeviceDisplay } from '../utils/deviceInfo';
 import { ResilientImage } from './ResilientImage';
+import {
+  extractCleanVideoUrl,
+  isExternalEmbedPlatformUrl,
+  isPdfAttachment,
+  normalizeExternalUrl,
+  parseYouTubeVideo,
+  resolvePdfAttachment,
+} from '../utils/mediaHelpers';
 
 export type AdminTab = 'students' | 'low-attendance' | 'teachers' | 'courses';
 
@@ -888,19 +896,28 @@ export function SupervisorDashboard({
   };
 
   const handleAddVideoLink = async (lessonId: string) => {
-    const url = (videoLinkUrlDraft[lessonId] || '').trim();
-    if (!url) {
+    const rawUrl = (videoLinkUrlDraft[lessonId] || '').trim();
+    if (!rawUrl) {
       setEditorFeedback('يرجى إدخال رابط الفيديو أولًا.');
+      return;
+    }
+    const yt = parseYouTubeVideo(rawUrl);
+    const cleanedUrl = yt ? yt.watchUrl : normalizeExternalUrl(extractCleanVideoUrl(rawUrl));
+    if (!cleanedUrl) {
+      setEditorFeedback('يرجى إدخال رابط فيديو صحيح.');
       return;
     }
     const lesson = editingLessons.find((l) => l.id === lessonId);
     const nextNum = (lesson?.videos?.length ?? 0) + 1;
     const title = (videoLinkTitleDraft[lessonId] || '').trim() || `فيديو الشرح ${nextNum}`;
-    const durationSeconds = await readVideoDurationSeconds(url);
+    const durationSeconds =
+      yt || isExternalEmbedPlatformUrl(cleanedUrl)
+        ? 0
+        : await readVideoDurationSeconds(cleanedUrl);
     const newVideo: LessonVideo = {
       id: `vid-${Date.now()}`,
       title,
-      url,
+      url: cleanedUrl,
       sourceType: 'link',
       ...(durationSeconds > 0 ? { durationSeconds } : {}),
     };
@@ -982,11 +999,17 @@ export function SupervisorDashboard({
         (fileUploadTitleDraft[lessonId] || '').trim() ||
         file.name.replace(/\.[^.]+$/, '') ||
         'ملف الحصة';
+      const isPdf =
+        res.fileType === 'pdf' ||
+        file.type === 'application/pdf' ||
+        file.name.toLowerCase().endsWith('.pdf');
       const newAtt: LessonAttachment = {
         id: `att-${Date.now()}`,
         title: customTitle,
         url: res.url,
         fileName: res.fileName,
+        fileType: isPdf ? 'pdf' : 'file',
+        mimeType: res.mimeType || (isPdf ? 'application/pdf' : file.type || undefined),
       };
       updateLessonField(lessonId, (les) => ({
         ...les,
@@ -999,18 +1022,23 @@ export function SupervisorDashboard({
   };
 
   const handleAddAttachmentLink = (lessonId: string) => {
-    const url = (fileLinkUrlDraft[lessonId] || '').trim();
-    if (!url) {
+    const rawUrl = (fileLinkUrlDraft[lessonId] || '').trim();
+    if (!rawUrl) {
       setEditorFeedback('يرجى إدخال رابط الملف أولًا.');
       return;
     }
+    const url = normalizeExternalUrl(rawUrl);
     const lesson = editingLessons.find((l) => l.id === lessonId);
     const nextNum = (lesson?.attachments?.length ?? 0) + 1;
     const title = (fileLinkTitleDraft[lessonId] || '').trim() || `ملف الحصة ${nextNum}`;
+    const detectedPdf =
+      isPdfAttachment({ url, fileName: url }) || /drive\.google\.com/i.test(url);
     const newAtt: LessonAttachment = {
       id: `att-${Date.now()}`,
       title,
       url,
+      fileType: detectedPdf ? 'pdf' : 'file',
+      ...(detectedPdf ? { mimeType: 'application/pdf' } : {}),
     };
     updateLessonField(lessonId, (les) => ({
       ...les,
@@ -2280,39 +2308,57 @@ export function SupervisorDashboard({
 
                           {videos.length > 0 && (
                             <div className="space-y-2">
-                              {videos.map((vid, vIdx) => (
-                                <div
-                                  key={vid.id}
-                                  className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3"
-                                >
-                                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                                    <Video className="w-4 h-4 text-blue-700 dark:text-blue-400 shrink-0" />
-                                    <div className="min-w-0 flex-1">
-                                      <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white break-words">
-                                        {vIdx + 1}. {vid.title}{' '}
-                                        <span className="text-xs font-normal text-blue-700 dark:text-blue-400">
-                                          ({vid.sourceType === 'upload' ? 'فيديو مرفوع' : 'لينك فيديو'})
-                                        </span>
-                                      </div>
-                                      <div
-                                        className="text-xs font-mono text-slate-500 dark:text-slate-400 truncate"
-                                        dir="ltr"
-                                      >
-                                        {vid.url.startsWith('data:')
-                                          ? 'ملف فيديو محفوظ محليًا'
-                                          : vid.url}
+                              {videos.map((vid, vIdx) => {
+                                const ytMeta =
+                                  vid.sourceType === 'link' ? parseYouTubeVideo(vid.url) : null;
+                                return (
+                                  <div
+                                    key={vid.id}
+                                    className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3"
+                                  >
+                                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                      {ytMeta ? (
+                                        <img
+                                          src={ytMeta.thumbnailUrl}
+                                          alt={vid.title}
+                                          className="w-16 h-10 rounded object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+                                        />
+                                      ) : (
+                                        <Video className="w-4 h-4 text-blue-700 dark:text-blue-400 shrink-0" />
+                                      )}
+                                      <div className="min-w-0 flex-1">
+                                        <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white break-words">
+                                          {vIdx + 1}. {vid.title}{' '}
+                                          <span className="text-xs font-normal text-blue-700 dark:text-blue-400">
+                                            (
+                                            {vid.sourceType === 'upload'
+                                              ? 'فيديو مرفوع'
+                                              : ytMeta
+                                                ? 'يوتيوب · يدعم غير المدرج'
+                                                : 'لينك فيديو'}
+                                            )
+                                          </span>
+                                        </div>
+                                        <div
+                                          className="text-xs font-mono text-slate-500 dark:text-slate-400 truncate"
+                                          dir="ltr"
+                                        >
+                                          {vid.url.startsWith('data:')
+                                            ? 'ملف فيديو محفوظ محليًا'
+                                            : vid.url}
+                                        </div>
                                       </div>
                                     </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveVideo(lesson.id, vid.id)}
+                                      className="px-2.5 py-1.5 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 shrink-0 cursor-pointer"
+                                    >
+                                      حذف الفيديو
+                                    </button>
                                   </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemoveVideo(lesson.id, vid.id)}
-                                    className="px-2.5 py-1.5 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 shrink-0 cursor-pointer"
-                                  >
-                                    حذف الفيديو
-                                  </button>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           )}
 
@@ -2321,7 +2367,7 @@ export function SupervisorDashboard({
                             <div className="p-3.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2.5">
                               <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-200">
                                 <Link2 className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
-                                <span>إضافة لينك فيديو</span>
+                                <span>إضافة لينك فيديو (يوتيوب غير مدرج أو عادي)</span>
                               </div>
                               <input
                                 type="text"
@@ -2336,7 +2382,7 @@ export function SupervisorDashboard({
                                 className="w-full px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
                               />
                               <input
-                                type="url"
+                                type="text"
                                 dir="ltr"
                                 value={videoLinkUrlDraft[lesson.id] ?? ''}
                                 onChange={(e) =>
@@ -2345,9 +2391,15 @@ export function SupervisorDashboard({
                                     [lesson.id]: e.target.value,
                                   }))
                                 }
-                                placeholder="https://youtube.com/watch?v=... أو رابط MP4"
+                                placeholder="https://youtu.be/... أو youtube.com/watch?v=... أو كود التضمين"
                                 className="w-full px-3 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
                               />
+                              {(videoLinkUrlDraft[lesson.id] || '').trim().length > 0 &&
+                                parseYouTubeVideo(videoLinkUrlDraft[lesson.id] || '') && (
+                                  <div className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded px-2.5 py-1">
+                                    تم التعرف على فيديو يوتيوب بنجاح (يعمل مع الفيديوهات غير المدرجة Unlisted).
+                                  </div>
+                                )}
                               <button
                                 type="button"
                                 onClick={() => void handleAddVideoLink(lesson.id)}
@@ -2404,44 +2456,70 @@ export function SupervisorDashboard({
 
                         {/* Section 2: Lesson Attachments (PDFs / Files for students) */}
                         <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 space-y-4 bg-slate-50/40 dark:bg-slate-800/40">
-                          <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
+                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
                             <div className="flex items-center gap-2">
                               <FileText className="w-4 h-4 text-blue-700 dark:text-blue-400" />
                               <h4 className="text-sm font-bold text-slate-900 dark:text-white">
-                                ملفات ومذكرات الحصة للطلاب ({attachments.length})
+                                ملفات ومذكرات PDF للحصة ({attachments.length})
                               </h4>
                             </div>
+                            <span className="text-xs text-slate-500 dark:text-slate-400">
+                              ملفات PDF تُفتح مباشرة داخل الحصة للطلاب مع إمكانية التحميل
+                            </span>
                           </div>
 
                           {attachments.length > 0 && (
                             <div className="space-y-2">
-                              {attachments.map((att) => (
-                                <div
-                                  key={att.id}
-                                  className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3"
-                                >
-                                  <div className="min-w-0 flex-1">
-                                    <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white break-words">
-                                      {att.title}
+                              {attachments.map((att) => {
+                                const pdfMeta = resolvePdfAttachment(att);
+                                return (
+                                  <div
+                                    key={att.id}
+                                    className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3"
+                                  >
+                                    <div className="min-w-0 flex-1 space-y-0.5">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        {pdfMeta.isPdf && (
+                                          <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold uppercase text-red-700 dark:text-red-300 bg-red-100 dark:bg-red-950/70 border border-red-200 dark:border-red-800 rounded">
+                                            PDF
+                                          </span>
+                                        )}
+                                        <span className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white break-words">
+                                          {att.title}
+                                        </span>
+                                      </div>
+                                      <div
+                                        className="text-xs font-mono text-slate-500 dark:text-slate-400 truncate"
+                                        dir="ltr"
+                                      >
+                                        {att.fileName ||
+                                          (att.url.startsWith('data:')
+                                            ? 'ملف PDF مرفوع'
+                                            : att.url)}
+                                      </div>
                                     </div>
-                                    <div
-                                      className="text-xs font-mono text-slate-500 dark:text-slate-400 truncate"
-                                      dir="ltr"
-                                    >
-                                      {att.fileName || att.url}
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <a
+                                        href={pdfMeta.openSrc}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="px-2.5 py-1.5 text-xs font-semibold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/60"
+                                      >
+                                        معاينة
+                                      </a>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleRemoveAttachment(lesson.id, att.id)
+                                        }
+                                        className="px-2.5 py-1.5 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 cursor-pointer"
+                                      >
+                                        حذف الملف
+                                      </button>
                                     </div>
                                   </div>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      handleRemoveAttachment(lesson.id, att.id)
-                                    }
-                                    className="px-2.5 py-1.5 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 shrink-0 cursor-pointer"
-                                  >
-                                    حذف الملف
-                                  </button>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           )}
 
@@ -2450,7 +2528,7 @@ export function SupervisorDashboard({
                               <div className="space-y-2.5">
                                 <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-200">
                                   <FilePlus2 className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
-                                  <span>رفع ملف للطلاب (PDF / مذكرة / صور)</span>
+                                  <span>رفع ملف PDF للطلاب (ملزمة / كتاب / ملخص)</span>
                                 </div>
                                 <input
                                   type="text"
@@ -2471,11 +2549,11 @@ export function SupervisorDashboard({
                                 <span>
                                   {uploadingKey === `file-${lesson.id}`
                                     ? 'جاري رفع الملف...'
-                                    : 'اختر ملف لرفعه للطلاب'}
+                                    : 'اختر ملف PDF أو مستند للرفع'}
                                 </span>
                                 <input
                                   type="file"
-                                  accept=".pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg,.zip,application/pdf"
+                                  accept="application/pdf,.pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg,.zip"
                                   disabled={uploadingKey === `file-${lesson.id}`}
                                   onChange={(e) => {
                                     const file = e.target.files?.[0];
@@ -2490,7 +2568,7 @@ export function SupervisorDashboard({
                             <div className="p-3.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2.5">
                               <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-200">
                                 <Link2 className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
-                                <span>إضافة رابط ملف خارجي (Drive / PDF)</span>
+                                <span>إضافة رابط ملف PDF أو Google Drive</span>
                               </div>
                               <input
                                 type="text"
@@ -2501,11 +2579,11 @@ export function SupervisorDashboard({
                                     [lesson.id]: e.target.value,
                                   }))
                                 }
-                                placeholder="اسم الملف"
+                                placeholder="اسم الملف (مثال: ملخص الحصة PDF)"
                                 className="w-full px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
                               />
                               <input
-                                type="url"
+                                type="text"
                                 dir="ltr"
                                 value={fileLinkUrlDraft[lesson.id] ?? ''}
                                 onChange={(e) =>
@@ -2514,7 +2592,7 @@ export function SupervisorDashboard({
                                     [lesson.id]: e.target.value,
                                   }))
                                 }
-                                placeholder="https://..."
+                                placeholder="https://.../notes.pdf أو رابط Google Drive"
                                 className="w-full px-3 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
                               />
                               <button

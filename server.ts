@@ -239,6 +239,8 @@ interface LessonAttachmentRecord {
   title: string;
   url: string;
   fileName?: string;
+  fileType?: 'pdf' | 'file';
+  mimeType?: string;
 }
 
 interface QuizQuestionRecord {
@@ -399,6 +401,22 @@ async function startServer() {
   await ensureCatalogDb();
   await fs.mkdir(UPLOADS_DIR, { recursive: true });
   const app = express();
+  app.use('/uploads', (req: Request, res: Response, next: NextFunction) => {
+    if (req.path.toLowerCase().endsWith('.pdf')) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      if (req.query.download === '1') {
+        const cleanFile = path.basename(req.path);
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${cleanFile}"`
+        );
+      } else {
+        res.setHeader('Content-Disposition', 'inline');
+      }
+    }
+    next();
+  });
   app.use('/uploads', express.static(UPLOADS_DIR));
   app.use(express.json({ limit: '12mb' }));
 
@@ -1322,6 +1340,36 @@ async function startServer() {
     }
   );
 
+  // Student: permanently delete own account
+  app.delete('/api/students/:id', async (req: Request, res: Response) => {
+    try {
+      const authHeader = req.headers.authorization || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const decoded = verifyToken(token);
+      if (!decoded) {
+        res.status(401).json({ error: 'غير مصرح.' });
+        return;
+      }
+      const targetId = req.params.id;
+      if (decoded.role === 'student' && decoded.sub !== targetId) {
+        res.status(403).json({ error: 'لا يمكنك حذف حساب طالب آخر.' });
+        return;
+      }
+
+      const students = await ensureDb();
+      const nextStudents = students.filter((s) => s.id !== targetId);
+      if (nextStudents.length === students.length) {
+        res.status(404).json({ error: 'الحساب غير موجود.' });
+        return;
+      }
+      await saveDb(nextStudents);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('Student self delete error:', err);
+      res.status(500).json({ error: 'تعذر حذف الحساب نهائيًا.' });
+    }
+  });
+
   // Supervisor: send in-platform attendance/follow-up alert to selected students
   app.post('/api/supervisor/alerts', requireSupervisor, async (req: Request, res: Response) => {
     try {
@@ -1532,13 +1580,22 @@ async function startServer() {
           decodedName = headerName;
         }
         const extMatch = path.extname(decodedName).match(/^\.[a-zA-Z0-9]{1,8}$/);
-        const safeExt = extMatch ? extMatch[0].toLowerCase() : '.bin';
-        const uniqueName = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}${safeExt}`;
+        const reqContentType = String(req.headers['content-type'] || '').toLowerCase();
+        const safeExt = extMatch
+          ? extMatch[0].toLowerCase()
+          : reqContentType.includes('application/pdf')
+            ? '.pdf'
+            : '.bin';
+        const isPdf = safeExt === '.pdf' || reqContentType.includes('application/pdf');
+        const resolvedExt = isPdf && safeExt === '.bin' ? '.pdf' : safeExt;
+        const uniqueName = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}${resolvedExt}`;
         await fs.mkdir(UPLOADS_DIR, { recursive: true });
         await fs.writeFile(path.join(UPLOADS_DIR, uniqueName), bodyBuf);
         res.status(201).json({
           url: `/uploads/${uniqueName}`,
           fileName: decodedName,
+          fileType: isPdf ? 'pdf' : 'file',
+          mimeType: isPdf ? 'application/pdf' : reqContentType || 'application/octet-stream',
         });
       } catch (err) {
         console.error('Upload error:', err);

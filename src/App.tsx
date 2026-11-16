@@ -22,6 +22,7 @@ import {
   Save,
   Search,
   Sun,
+  Trash2,
   Upload,
   UserCheck,
   Wallet,
@@ -53,6 +54,7 @@ import { ProgressDashboard } from './components/ProgressDashboard';
 import { StudentAuthModal } from './components/StudentAuthModal';
 import { AdminTab, SupervisorDashboard } from './components/SupervisorDashboard';
 import {
+  apiDeleteOwnStudentAccount,
   apiFetchAcademyCatalog,
   apiFetchStudentProfile,
   apiMarkStudentNotificationsRead,
@@ -69,6 +71,7 @@ import { getClientDeviceInfo, mergeStudentDeviceEntry } from './utils/deviceInfo
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from './firebase';
 import {
+  deleteFirebaseSelfAccount,
   loadFirebaseStudentByUid,
   markFirebaseNotificationsRead,
   signOutFirebase,
@@ -158,6 +161,10 @@ export default function App() {
     text: string;
   } | null>(null);
   const [blockedBanner, setBlockedBanner] = useState<string>('');
+  const [accountDeletedNotice, setAccountDeletedNotice] = useState<string>('');
+  const [showDeleteAccountModal, setShowDeleteAccountModal] = useState<boolean>(false);
+  const [deletingAccount, setDeletingAccount] = useState<boolean>(false);
+  const [deleteAccountError, setDeleteAccountError] = useState<string>('');
   const [dismissedAutoBlockWarning, setDismissedAutoBlockWarning] = useState<boolean>(false);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
@@ -756,9 +763,44 @@ export default function App() {
     void signOutFirebase();
     setShowWalletModal(false);
     setShowNotificationsModal(false);
+    setShowDeleteAccountModal(false);
     setPurchaseFeedback(null);
     setSession(DEFAULT_SESSION);
     navigateTo('home');
+  };
+
+  const openDeleteAccountConfirm = () => {
+    setDeleteAccountError('');
+    setMobileNavOpen(false);
+    setShowDeleteAccountModal(true);
+  };
+
+  const handleConfirmDeleteOwnAccount = async () => {
+    const cur = sessionRef.current;
+    if (cur.role !== 'student' || !cur.studentId || !cur.token || deletingAccount) {
+      return;
+    }
+    setDeletingAccount(true);
+    setDeleteAccountError('');
+    try {
+      if (cur.token === 'firebase-google-session') {
+        await deleteFirebaseSelfAccount(cur.studentId);
+      } else {
+        const res = await apiDeleteOwnStudentAccount(cur.studentId, cur.token);
+        if (!res.ok) {
+          setDeleteAccountError(res.error);
+          return;
+        }
+      }
+      setShowDeleteAccountModal(false);
+      handleLogout();
+      setBlockedBanner('');
+      setAccountDeletedNotice('تم حذف حسابك وجميع بياناتك نهائيًا من المنصة.');
+    } catch {
+      setDeleteAccountError('تعذر حذف الحساب حاليًا. يرجى المحاولة مرة أخرى.');
+    } finally {
+      setDeletingAccount(false);
+    }
   };
 
   const handleOpenNotificationsModal = () => {
@@ -1065,11 +1107,47 @@ export default function App() {
             >
               {headerPrimaryLabel}
             </button>
+            {session.role === 'student' && (
+              <div className="pt-1 space-y-2">
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="block w-full text-center px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700"
+                >
+                  تسجيل الخروج
+                </button>
+                <button
+                  type="button"
+                  onClick={openDeleteAccountConfirm}
+                  className="flex w-full items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>حذف حسابي نهائيًا</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
       </header>
 
       <main className="flex-1 min-w-0">
+        {accountDeletedNotice && (
+          <div className="bg-emerald-50 dark:bg-emerald-950/70 border-b border-emerald-200 dark:border-emerald-800 px-4 py-3 text-xs sm:text-sm font-semibold text-emerald-900 dark:text-emerald-200 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span>{accountDeletedNotice}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAccountDeletedNotice('')}
+              className="p-1 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 rounded"
+              aria-label="إغلاق الإشعار"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {blockedBanner && (
           <div className="bg-red-50 dark:bg-red-950/70 border-b border-red-200 dark:border-red-800 px-4 py-3 text-xs sm:text-sm font-semibold text-red-800 dark:text-red-200 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
@@ -1175,6 +1253,9 @@ export default function App() {
             onMarkNotificationsRead={handleMarkNotificationsRead}
             onOpenCourse={openCourse}
             onLogout={handleLogout}
+            onRequestDeleteAccount={
+              session.role === 'student' ? openDeleteAccountConfirm : undefined
+            }
           />
         ) : view === 'subscriptions' ? (
           <section className="py-10 sm:py-14 bg-white dark:bg-slate-950 min-h-[75vh]">
@@ -2215,6 +2296,80 @@ export default function App() {
                     <span>{heroSaving ? 'جاري الحفظ...' : 'حفظ التغييرات'}</span>
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteAccountModal && session.role === 'student' && (
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/75 p-3 sm:p-4 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-own-account-title"
+        >
+          <div className="min-h-full flex items-center justify-center py-4">
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-red-200 dark:border-red-800 max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-5">
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 shrink-0">
+                    <Trash2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3
+                      id="delete-own-account-title"
+                      className="text-base sm:text-lg font-bold text-slate-900 dark:text-white"
+                    >
+                      تأكيد حذف الحساب نهائيًا
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {session.studentName}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={deletingAccount}
+                  onClick={() => setShowDeleteAccountModal(false)}
+                  aria-label="إغلاق"
+                  className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-red-50/80 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-xs sm:text-sm text-red-950 dark:text-red-100 space-y-1.5 leading-relaxed">
+                <p className="font-bold">تحذير: هذا الإجراء نهائي ولا يمكن التراجع عنه.</p>
+                <p>
+                  سيتم مسح حسابك بالكامل من المنصة، بما في ذلك بيانات التسجيل، الكورسات المفعلة، سجل التقدم والحضور، الملاحظات، ورصيد المحفظة.
+                </p>
+              </div>
+
+              {deleteAccountError && (
+                <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/60 border border-red-300 dark:border-red-800 text-xs font-semibold text-red-800 dark:text-red-200">
+                  {deleteAccountError}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-end gap-2.5 pt-1">
+                <button
+                  type="button"
+                  disabled={deletingAccount}
+                  onClick={() => setShowDeleteAccountModal(false)}
+                  className="px-4 py-2 text-xs sm:text-sm font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                >
+                  إلغاء والعودة
+                </button>
+                <button
+                  type="button"
+                  disabled={deletingAccount}
+                  onClick={() => void handleConfirmDeleteOwnAccount()}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-60 cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>{deletingAccount ? 'جاري حذف الحساب...' : 'نعم، احذف حسابي نهائيًا'}</span>
+                </button>
               </div>
             </div>
           </div>

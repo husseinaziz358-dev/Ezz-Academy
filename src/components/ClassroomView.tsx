@@ -6,6 +6,8 @@ import {
   Circle,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   FileText,
   Film,
   HelpCircle,
@@ -27,6 +29,11 @@ import {
 import { InteractiveConceptLab } from './InteractiveConceptLab';
 import { CertificateModal } from './CertificateModal';
 import { formatAttendanceDateArabic, getTodayDateKey } from '../utils/attendance';
+import {
+  extractCleanVideoUrl,
+  parseYouTubeVideo,
+  resolvePdfAttachment,
+} from '../utils/mediaHelpers';
 
 interface ClassroomViewProps {
   course: Course;
@@ -56,10 +63,10 @@ function resolveVideoEmbed(
   url: string,
   sourceType: LessonVideo['sourceType']
 ):
-  | { kind: 'iframe'; src: string }
+  | { kind: 'iframe'; src: string; watchUrl: string; isYouTube: boolean }
   | { kind: 'video'; src: string }
   | { kind: 'external'; src: string } {
-  const trimmed = url.trim();
+  const trimmed = extractCleanVideoUrl(url);
   if (
     sourceType === 'upload' ||
     trimmed.startsWith('/uploads/') ||
@@ -70,38 +77,43 @@ function resolveVideoEmbed(
     return { kind: 'video', src: trimmed };
   }
 
+  const yt = parseYouTubeVideo(trimmed);
+  if (yt) {
+    return {
+      kind: 'iframe',
+      src: yt.embedUrl,
+      watchUrl: yt.watchUrl,
+      isYouTube: true,
+    };
+  }
+
   try {
     const parsed = new URL(trimmed);
     const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
 
-    if (host === 'youtube.com' || host === 'm.youtube.com') {
-      if (parsed.pathname.startsWith('/embed/')) {
-        return { kind: 'iframe', src: trimmed };
-      }
-      if (parsed.pathname.startsWith('/shorts/')) {
-        const id = parsed.pathname.split('/')[2];
-        if (id) return { kind: 'iframe', src: `https://www.youtube.com/embed/${id}` };
-      }
-      const v = parsed.searchParams.get('v');
-      if (v) return { kind: 'iframe', src: `https://www.youtube.com/embed/${v}` };
-    }
-
-    if (host === 'youtu.be') {
-      const id = parsed.pathname.replace(/^\//, '');
-      if (id) return { kind: 'iframe', src: `https://www.youtube.com/embed/${id}` };
-    }
-
-    if (host === 'vimeo.com') {
-      const id = parsed.pathname.replace(/^\//, '').split('/')[0];
+    if (host === 'vimeo.com' || host === 'player.vimeo.com') {
+      const id = parsed.pathname.split('/').filter(Boolean).pop();
       if (id && /^\d+$/.test(id)) {
-        return { kind: 'iframe', src: `https://player.vimeo.com/video/${id}` };
+        return {
+          kind: 'iframe',
+          src: `https://player.vimeo.com/video/${id}`,
+          watchUrl: trimmed,
+          isYouTube: false,
+        };
       }
     }
 
     if (host === 'drive.google.com') {
       const match = parsed.pathname.match(/\/file\/d\/([^/]+)/);
-      if (match?.[1]) {
-        return { kind: 'iframe', src: `https://drive.google.com/file/d/${match[1]}/preview` };
+      const idParam = parsed.searchParams.get('id');
+      const driveId = match?.[1] || idParam;
+      if (driveId) {
+        return {
+          kind: 'iframe',
+          src: `https://drive.google.com/file/d/${driveId}/preview`,
+          watchUrl: `https://drive.google.com/file/d/${driveId}/view`,
+          isYouTube: false,
+        };
       }
     }
   } catch {
@@ -109,6 +121,94 @@ function resolveVideoEmbed(
   }
 
   return { kind: 'external', src: trimmed };
+}
+
+function EmbeddedPdfViewer({
+  src,
+  title,
+  openSrc,
+  downloadSrc,
+  fileName,
+}: {
+  src: string;
+  title: string;
+  openSrc: string;
+  downloadSrc: string;
+  fileName?: string;
+}) {
+  const [blobSrc, setBlobSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!src.startsWith('data:application/pdf')) {
+      setBlobSrc(null);
+      return;
+    }
+
+    let revoked = false;
+    let objectUrl: string | null = null;
+    try {
+      const commaIdx = src.indexOf(',');
+      if (commaIdx > 0) {
+        const base64Part = src.slice(commaIdx + 1);
+        const binary = window.atob(base64Part);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: 'application/pdf' });
+        objectUrl = URL.createObjectURL(blob);
+        if (!revoked) {
+          setBlobSrc(objectUrl);
+        }
+      }
+    } catch {
+      setBlobSrc(null);
+    }
+
+    return () => {
+      revoked = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [src]);
+
+  const frameUrl = blobSrc || src;
+
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700 space-y-2.5 w-full">
+      <div className="w-full rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950">
+        <iframe
+          key={frameUrl}
+          src={frameUrl}
+          title={title}
+          className="w-full h-[500px] sm:h-[660px] border-0 bg-white"
+        />
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-400">
+        <span>
+          إذا لم يظهر الملف داخل الإطار على متصفح الهاتف، يمكنك فتحه مباشرة أو تحميله.
+        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <a
+            href={openSrc}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            <span>فتح في نافذة مستقلة</span>
+          </a>
+          <a
+            href={downloadSrc}
+            download={fileName || `${title}.pdf`}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>تحميل PDF</span>
+          </a>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function getExamAnswerKey(lessonId: string, qIndex: number): string {
@@ -146,6 +246,7 @@ export function ClassroomView({
   const [playbackSpeed, setPlaybackSpeed] = useState<1 | 1.25 | 1.5>(1);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [showCertificate, setShowCertificate] = useState<boolean>(false);
+  const [expandedPdfIds, setExpandedPdfIds] = useState<Record<string, boolean>>({});
 
   const activeLesson: Lesson | undefined =
     allLessons.find((l) => l.id === activeLessonId) ?? allLessons[0];
@@ -203,6 +304,7 @@ export function ClassroomView({
     setElapsedSeconds(0);
     setIsPlaying(false);
     setActiveVideoIndex(0);
+    setExpandedPdfIds({});
   }, [activeLesson?.id]);
 
   useEffect(() => {
@@ -456,14 +558,34 @@ export function ClassroomView({
                     const resolved = resolveVideoEmbed(activeVideo.url, activeVideo.sourceType);
                     if (resolved.kind === 'iframe') {
                       return (
-                        <div className="aspect-video w-full bg-black">
-                          <iframe
-                            src={resolved.src}
-                            title={activeVideo.title}
-                            className="w-full h-full border-0"
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-                            allowFullScreen
-                          />
+                        <div>
+                          <div className="aspect-video w-full bg-black">
+                            <iframe
+                              key={resolved.src}
+                              src={resolved.src}
+                              title={activeVideo.title}
+                              className="w-full h-full border-0"
+                              referrerPolicy="strict-origin-when-cross-origin"
+                              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+                              allowFullScreen
+                            />
+                          </div>
+                          <div className="px-4 py-2.5 bg-slate-900 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
+                            <span>
+                              {resolved.isYouTube
+                                ? 'مشغل يوتيوب (يدعم الفيديوهات غير المدرجة والعادية)'
+                                : 'مشغل فيديو مضمّن'}
+                            </span>
+                            <a
+                              href={resolved.watchUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-blue-300 bg-slate-800 border border-slate-700 rounded-md hover:bg-slate-700 hover:text-white transition-colors"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              <span>{resolved.isYouTube ? 'فتح في يوتيوب' : 'فتح في نافذة خارجية'}</span>
+                            </a>
+                          </div>
                         </div>
                       );
                     }
@@ -657,34 +779,99 @@ export function ClassroomView({
                     </span>
                   </div>
 
-                  <div className="space-y-2">
-                    {lessonAttachments.map((att) => (
-                      <div
-                        key={att.id}
-                        className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                            {att.title}
-                          </div>
-                          {att.fileName && (
-                            <div className="text-xs text-slate-500 dark:text-slate-400 truncate" dir="ltr">
-                              {att.fileName}
+                  <div className="space-y-3">
+                    {lessonAttachments.map((att) => {
+                      const pdfInfo = resolvePdfAttachment(att);
+                      const isPdfOpen = Boolean(expandedPdfIds[att.id]);
+                      return (
+                        <div
+                          key={att.id}
+                          className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                {pdfInfo.isPdf && (
+                                  <span className="inline-flex items-center px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-red-700 dark:text-red-300 bg-red-100 dark:bg-red-950/70 border border-red-200 dark:border-red-800 rounded">
+                                    PDF
+                                  </span>
+                                )}
+                                <span className="text-sm font-semibold text-slate-900 dark:text-white break-words">
+                                  {att.title}
+                                </span>
+                              </div>
+                              {att.fileName && (
+                                <div className="text-xs text-slate-500 dark:text-slate-400 truncate" dir="ltr">
+                                  {att.fileName}
+                                </div>
+                              )}
                             </div>
+
+                            <div className="flex flex-wrap items-center gap-2 shrink-0">
+                              {pdfInfo.canEmbedPreview && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedPdfIds((prev) => ({
+                                      ...prev,
+                                      [att.id]: !prev[att.id],
+                                    }))
+                                  }
+                                  className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                                    isPdfOpen
+                                      ? 'bg-slate-900 dark:bg-slate-700 border-slate-900 dark:border-slate-600 text-white'
+                                      : 'bg-white dark:bg-slate-900 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/60'
+                                  }`}
+                                >
+                                  {isPdfOpen ? (
+                                    <>
+                                      <EyeOff className="w-3.5 h-3.5" />
+                                      <span>إخفاء المعاينة</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Eye className="w-3.5 h-3.5" />
+                                      <span>عرض PDF هنا</span>
+                                    </>
+                                  )}
+                                </button>
+                              )}
+
+                              <a
+                                href={pdfInfo.openSrc}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                                <span>فتح</span>
+                              </a>
+
+                              <a
+                                href={pdfInfo.downloadSrc}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                download={att.fileName || att.title}
+                                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                <span>تحميل</span>
+                              </a>
+                            </div>
+                          </div>
+
+                          {pdfInfo.canEmbedPreview && isPdfOpen && (
+                            <EmbeddedPdfViewer
+                              src={pdfInfo.previewSrc}
+                              title={att.title}
+                              openSrc={pdfInfo.openSrc}
+                              downloadSrc={pdfInfo.downloadSrc}
+                              fileName={att.fileName}
+                            />
                           )}
                         </div>
-                        <a
-                          href={att.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          download={att.fileName || att.title}
-                          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors shrink-0"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          <span>فتح / تحميل</span>
-                        </a>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}

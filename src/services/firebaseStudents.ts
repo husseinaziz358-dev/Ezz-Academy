@@ -1,4 +1,4 @@
-import { signInWithPopup, signOut } from 'firebase/auth';
+import { deleteUser, signInWithPopup, signOut } from 'firebase/auth';
 import {
   collection,
   deleteDoc,
@@ -606,6 +606,25 @@ export async function deleteFirebaseStudent(studentUid: string): Promise<void> {
   try {
     await deleteDoc(doc(db, 'students', studentUid, 'private', 'contact')).catch(() => undefined);
     await deleteDoc(doc(db, 'students', studentUid));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `students/${studentUid}`);
+  }
+}
+
+export async function deleteFirebaseSelfAccount(studentUid: string): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== studentUid || !ID_PATTERN.test(studentUid)) {
+    throw new Error('غير مصرح بحذف هذا الحساب.');
+  }
+  try {
+    const notifSnap = await getDocs(collection(db, 'students', studentUid, 'notifications')).catch(
+      () => null
+    );
+    if (notifSnap && !notifSnap.empty) {
+      await Promise.all(notifSnap.docs.map((d) => deleteDoc(d.ref).catch(() => undefined)));
+    }
+    await deleteDoc(doc(db, 'students', studentUid, 'private', 'contact')).catch(() => undefined);
+    await deleteDoc(doc(db, 'students', studentUid));
+    await deleteUser(auth.currentUser).catch(() => undefined);
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `students/${studentUid}`);
   }

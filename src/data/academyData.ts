@@ -88,6 +88,8 @@ export interface LessonAttachment {
   title: string;
   url: string;
   fileName?: string;
+  fileType?: 'pdf' | 'file';
+  mimeType?: string;
 }
 
 export interface Lesson {
