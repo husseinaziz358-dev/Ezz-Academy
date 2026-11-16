@@ -18,9 +18,7 @@ import {
   LayoutDashboard,
   Lock,
   Menu,
-  MessageCircle,
   Moon,
-  Phone,
   Plus,
   RotateCcw,
   Save,
@@ -68,7 +66,6 @@ import {
   apiSyncPendingStudentSession,
   apiSyncStudentProgress,
   apiUpdateHeroImage,
-  apiUpdateSupportWhatsappPhone,
   apiUploadMediaFile,
   formatTelegramUrl,
   formatWhatsappUrl,
@@ -190,9 +187,6 @@ export default function App() {
   const [deletedCourseIds, setDeletedCourseIds] = useState<string[]>([]);
   const [heroImage, setHeroImage] = useState<string>('');
   const [supportWhatsappPhone, setSupportWhatsappPhone] = useState<string>('01022193514');
-  const [editingWhatsappInline, setEditingWhatsappInline] = useState<boolean>(false);
-  const [whatsappInlineDraft, setWhatsappInlineDraft] = useState<string>('01022193514');
-  const [whatsappInlineSaving, setWhatsappInlineSaving] = useState<boolean>(false);
   const [showHeroEditorModal, setShowHeroEditorModal] = useState<boolean>(false);
   const [heroImageDraft, setHeroImageDraft] = useState<string>('');
   const [heroUploading, setHeroUploading] = useState<boolean>(false);
@@ -268,26 +262,7 @@ export default function App() {
     setCustomCourses(catalog.customCourses);
     setDeletedCourseIds(catalog.deletedCourseIds);
     setHeroImage(catalog.heroImage || '');
-    const nextPhone = catalog.supportWhatsappPhone || '01022193514';
-    setSupportWhatsappPhone(nextPhone);
-    setWhatsappInlineDraft(nextPhone);
-  };
-
-  const handleSaveWhatsappInline = async () => {
-    if (session.role !== 'supervisor' || whatsappInlineSaving) return;
-    const trimmed = whatsappInlineDraft.trim();
-    if (!trimmed) return;
-    setWhatsappInlineSaving(true);
-    try {
-      const res = await apiUpdateSupportWhatsappPhone(session.token, trimmed);
-      if (res.ok) {
-        setSupportWhatsappPhone(res.supportWhatsappPhone);
-        setWhatsappInlineDraft(res.supportWhatsappPhone);
-        setEditingWhatsappInline(false);
-      }
-    } finally {
-      setWhatsappInlineSaving(false);
-    }
+    setSupportWhatsappPhone(catalog.supportWhatsappPhone || '01022193514');
   };
 
   const openHeroEditor = () => {
@@ -2078,94 +2053,6 @@ export default function App() {
                 )}
               </div>
             </section>
-
-            {/* Bottom WhatsApp & Supervisor Contact Section for Platform Charging */}
-            <section className="py-10 bg-emerald-50/70 dark:bg-emerald-950/25 border-t border-emerald-200/80 dark:border-emerald-900/60">
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div className="bg-white dark:bg-slate-900 rounded-2xl border-2 border-emerald-300 dark:border-emerald-800 p-5 sm:p-7 shadow-sm flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5">
-                  <div className="flex items-start gap-4">
-                    <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm">
-                      <MessageCircle className="w-6 h-6" />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300">
-                        شحن محفظة المنصة وتفعيل الكورسات
-                      </div>
-                      <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-                        تواصل مع المشرف عبر واتساب أو مكالمة لشحن رصيد المنصة
-                      </h3>
-                      <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
-                        لشحن محفظتك أو تفعيل الكورسات أو الاستفسارات الإدارية، تواصل مباشرة مع رقم المشرف:
-                        <span className="font-mono font-bold text-emerald-700 dark:text-emerald-400 mr-1.5" dir="ltr">
-                          {supportWhatsappPhone}
-                        </span>
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto justify-end">
-                    <a
-                      href={formatWhatsappUrl(
-                        supportWhatsappPhone,
-                        'السلام عليكم، أريد التواصل مع المشرف لشحن رصيد محفظتي على منصة Ezz Academy'
-                      )}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 px-5 py-3 text-xs sm:text-sm font-bold text-white bg-emerald-600 rounded-xl hover:bg-emerald-700 transition-colors shadow-xs"
-                    >
-                      <MessageCircle className="w-4 h-4 shrink-0" />
-                      <span>مراسلة المشرف واتساب لشحن المنصة</span>
-                    </a>
-
-                    <a
-                      href={`tel:${supportWhatsappPhone}`}
-                      className="inline-flex items-center justify-center gap-2 px-4 py-3 text-xs sm:text-sm font-bold text-emerald-800 dark:text-emerald-200 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700 rounded-xl hover:bg-emerald-100 transition-colors"
-                    >
-                      <Phone className="w-4 h-4 shrink-0" />
-                      <span className="font-mono" dir="ltr">
-                        {supportWhatsappPhone}
-                      </span>
-                    </a>
-
-                    {session.role === 'supervisor' && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setWhatsappInlineDraft(supportWhatsappPhone);
-                          setEditingWhatsappInline((v) => !v);
-                        }}
-                        className="px-3 py-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl hover:bg-slate-200 cursor-pointer"
-                      >
-                        تعديل الرقم
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {session.role === 'supervisor' && editingWhatsappInline && (
-                  <div className="mt-3 p-4 rounded-xl bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-800 flex flex-wrap items-center gap-2.5">
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                      رقم واتساب ومكالمات المشرف لشحن المنصة:
-                    </span>
-                    <input
-                      type="tel"
-                      dir="ltr"
-                      value={whatsappInlineDraft}
-                      onChange={(e) => setWhatsappInlineDraft(e.target.value)}
-                      className="px-3 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
-                    />
-                    <button
-                      type="button"
-                      disabled={whatsappInlineSaving}
-                      onClick={() => void handleSaveWhatsappInline()}
-                      className="px-3.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 cursor-pointer disabled:opacity-60"
-                    >
-                      {whatsappInlineSaving ? 'جاري الحفظ...' : 'حفظ الرقم'}
-                    </button>
-                  </div>
-                )}
-              </div>
-            </section>
           </>
         )}
       </main>
@@ -2203,7 +2090,7 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Floating Bottom WhatsApp Button for Supervisor Top-Up */}
+      {/* Small WhatsApp Icon Only for Supervisor Top-Up */}
       {view !== 'classroom' && (
         <div className="fixed bottom-4 left-4 z-30 no-print">
           <a
@@ -2213,14 +2100,18 @@ export default function App() {
             )}
             target="_blank"
             rel="noopener noreferrer"
+            aria-label="تواصل مع المشرف عبر واتساب لشحن المنصة"
             title={`تواصل مع المشرف لشحن المنصة (${supportWhatsappPhone})`}
-            className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-lg border border-emerald-500 transition-transform hover:scale-105"
+            className="w-10 h-10 rounded-full bg-[#25D366] hover:bg-[#1ebe5d] text-white flex items-center justify-center shadow-md transition-transform hover:scale-105"
           >
-            <MessageCircle className="w-4 h-4 shrink-0" />
-            <span>واتساب المشرف لشحن المنصة</span>
-            <span className="font-mono text-[11px] bg-emerald-700/80 px-1.5 py-0.5 rounded" dir="ltr">
-              {supportWhatsappPhone}
-            </span>
+            <svg
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              className="w-5 h-5"
+              aria-hidden="true"
+            >
+              <path d="M12.031 2c-5.516 0-9.969 4.453-9.969 9.969 0 1.758.459 3.474 1.331 4.988L2 22l5.188-1.361c1.464.799 3.111 1.221 4.843 1.221 5.516 0 9.969-4.453 9.969-9.969S17.547 2 12.031 2zm5.822 14.129c-.244.688-1.416 1.314-1.958 1.396-.502.075-1.137.107-1.835-.115-.423-.134-.965-.314-1.662-.615-2.927-1.263-4.838-4.211-4.985-4.406-.146-.195-1.191-1.584-1.191-3.021 0-1.438.753-2.144 1.021-2.437.269-.292.586-.365.781-.365.195 0 .391.002.561.01.18.009.421-.068.659.503.244.585.83 2.023.903 2.169.073.146.122.317.024.512-.098.195-.146.317-.293.487-.146.171-.308.381-.439.512-.147.146-.3.305-.129.598.171.292.759 1.252 1.63 2.029 1.121.999 2.066 1.309 2.359 1.455.293.146.464.122.635-.073.171-.195.732-.853.927-1.146.195-.292.391-.244.659-.146.269.098 1.709.805 2.002.951.293.146.488.219.561.341.074.122.074.707-.17 1.395z" />
+            </svg>
           </a>
         </div>
       )}
@@ -2283,10 +2174,18 @@ export default function App() {
                   )}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors"
+                  aria-label="شحن المحفظة عبر واتساب المشرف"
+                  title={`تواصل مع المشرف لشحن المحفظة (${supportWhatsappPhone})`}
+                  className="w-9 h-9 rounded-full bg-[#25D366] hover:bg-[#1ebe5d] text-white flex items-center justify-center shadow-sm transition-transform hover:scale-105"
                 >
-                  <MessageCircle className="w-4 h-4" />
-                  <span>شحن المحفظة عبر واتساب المشرف ({supportWhatsappPhone})</span>
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    className="w-5 h-5"
+                    aria-hidden="true"
+                  >
+                    <path d="M12.031 2c-5.516 0-9.969 4.453-9.969 9.969 0 1.758.459 3.474 1.331 4.988L2 22l5.188-1.361c1.464.799 3.111 1.221 4.843 1.221 5.516 0 9.969-4.453 9.969-9.969S17.547 2 12.031 2zm5.822 14.129c-.244.688-1.416 1.314-1.958 1.396-.502.075-1.137.107-1.835-.115-.423-.134-.965-.314-1.662-.615-2.927-1.263-4.838-4.211-4.985-4.406-.146-.195-1.191-1.584-1.191-3.021 0-1.438.753-2.144 1.021-2.437.269-.292.586-.365.781-.365.195 0 .391.002.561.01.18.009.421-.068.659.503.244.585.83 2.023.903 2.169.073.146.122.317.024.512-.098.195-.146.317-.293.487-.146.171-.308.381-.439.512-.147.146-.3.305-.129.598.171.292.759 1.252 1.63 2.029 1.121.999 2.066 1.309 2.359 1.455.293.146.464.122.635-.073.171-.195.732-.853.927-1.146.195-.292.391-.244.659-.146.269.098 1.709.805 2.002.951.293.146.488.219.561.341.074.122.074.707-.17 1.395z" />
+                  </svg>
                 </a>
               </div>
 
