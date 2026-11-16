@@ -599,7 +599,7 @@ export function ClassroomView({
                 src={course.image}
                 alt={course.title}
                 fallbackTitle={course.fallbackTitle}
-                className="w-full h-full object-cover"
+                className="w-full h-full object-contain bg-slate-900"
               />
             </div>
 
