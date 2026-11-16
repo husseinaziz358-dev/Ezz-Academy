@@ -27,6 +27,7 @@ export interface StudentRecord {
   id: string;
   studentName: string;
   studentPhone: string;
+  studentEmail?: string;
   parentName: string;
   parentPhone: string;
   motherName: string;

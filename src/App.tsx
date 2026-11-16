@@ -92,6 +92,7 @@ interface SessionState {
   studentId: string | null;
   studentName: string;
   studentPhone: string;
+  studentEmail: string;
   studentGrade: string;
   studentSpecialization: string;
   supervisorName: string;
@@ -117,6 +118,7 @@ const DEFAULT_SESSION: SessionState = {
   studentId: null,
   studentName: 'طالب Ezz Academy',
   studentPhone: '',
+  studentEmail: '',
   studentGrade: 'الصف الثالث الثانوي',
   studentSpecialization: 'علمي رياضة',
   supervisorName: '',
@@ -305,8 +307,14 @@ export default function App() {
   }, [session]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, () => {
-      // Keep Firebase Auth session synchronized with client state
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      const userEmail = user?.email?.trim() || '';
+      if (userEmail && sessionRef.current.role !== 'guest' && !sessionRef.current.studentEmail) {
+        setSession((prev) => ({
+          ...prev,
+          studentEmail: userEmail,
+        }));
+      }
     });
     return () => unsubscribe();
   }, []);
@@ -710,6 +718,7 @@ export default function App() {
       studentId: student.id,
       studentName: student.studentName,
       studentPhone: student.studentPhone,
+      studentEmail: student.studentEmail || auth.currentUser?.email || '',
       studentGrade: student.stage,
       studentSpecialization: `${student.specializationType}: ${student.specialization}`,
       supervisorName: '',
@@ -754,6 +763,7 @@ export default function App() {
       token: info.token,
       supervisorName: info.name,
       supervisorPhone: info.phone,
+      studentEmail: auth.currentUser?.email || prev.studentEmail || '',
     }));
     setAdminTab('students');
     navigateTo('supervisor');
@@ -1218,7 +1228,17 @@ export default function App() {
             attendanceDates={session.attendanceDates}
             notesByLesson={session.notesByLesson}
             quizAnswers={session.quizAnswers}
-            studentName={session.studentName}
+            studentName={
+              session.role === 'supervisor'
+                ? session.supervisorName || 'المشرف العام'
+                : session.studentName
+            }
+            studentEmail={session.studentEmail || auth.currentUser?.email || ''}
+            studentPhone={
+              session.role === 'supervisor'
+                ? session.supervisorPhone
+                : session.studentPhone
+            }
             onUpdateStudentName={(name) =>
               setSession((prev) => ({ ...prev, studentName: name }))
             }

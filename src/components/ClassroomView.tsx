@@ -28,6 +28,7 @@ import {
 } from '../data/academyData';
 import { InteractiveConceptLab } from './InteractiveConceptLab';
 import { CertificateModal } from './CertificateModal';
+import { CustomYouTubePlayer } from './CustomYouTubePlayer';
 import { formatAttendanceDateArabic, getTodayDateKey } from '../utils/attendance';
 import {
   extractCleanVideoUrl,
@@ -44,6 +45,8 @@ interface ClassroomViewProps {
   notesByLesson: Record<string, string>;
   quizAnswers: Record<string, number>;
   studentName: string;
+  studentEmail?: string;
+  studentPhone?: string;
   onUpdateStudentName: (name: string) => void;
   onToggleLessonComplete: (lessonId: string) => void;
   onMarkLessonComplete?: (lessonId: string) => void;
@@ -63,7 +66,8 @@ function resolveVideoEmbed(
   url: string,
   sourceType: LessonVideo['sourceType']
 ):
-  | { kind: 'iframe'; src: string; watchUrl: string; isYouTube: boolean }
+  | { kind: 'youtube'; videoId: string; startSeconds: number }
+  | { kind: 'iframe'; src: string; watchUrl: string }
   | { kind: 'video'; src: string }
   | { kind: 'external'; src: string } {
   const trimmed = extractCleanVideoUrl(url);
@@ -80,10 +84,9 @@ function resolveVideoEmbed(
   const yt = parseYouTubeVideo(trimmed);
   if (yt) {
     return {
-      kind: 'iframe',
-      src: yt.embedUrl,
-      watchUrl: yt.watchUrl,
-      isYouTube: true,
+      kind: 'youtube',
+      videoId: yt.id,
+      startSeconds: yt.startSeconds,
     };
   }
 
@@ -98,7 +101,6 @@ function resolveVideoEmbed(
           kind: 'iframe',
           src: `https://player.vimeo.com/video/${id}`,
           watchUrl: trimmed,
-          isYouTube: false,
         };
       }
     }
@@ -112,7 +114,6 @@ function resolveVideoEmbed(
           kind: 'iframe',
           src: `https://drive.google.com/file/d/${driveId}/preview`,
           watchUrl: `https://drive.google.com/file/d/${driveId}/view`,
-          isYouTube: false,
         };
       }
     }
@@ -224,6 +225,8 @@ export function ClassroomView({
   notesByLesson,
   quizAnswers,
   studentName,
+  studentEmail,
+  studentPhone,
   onUpdateStudentName,
   onToggleLessonComplete,
   onMarkLessonComplete,
@@ -556,6 +559,40 @@ export function ClassroomView({
 
                   {(() => {
                     const resolved = resolveVideoEmbed(activeVideo.url, activeVideo.sourceType);
+                    if (resolved.kind === 'youtube') {
+                      return (
+                        <CustomYouTubePlayer
+                          key={`${activeVideo.id}:${resolved.videoId}`}
+                          videoId={resolved.videoId}
+                          title={activeVideo.title}
+                          startSeconds={resolved.startSeconds}
+                          studentName={studentName}
+                          studentEmail={studentEmail}
+                          studentPhone={studentPhone}
+                          onDurationDetected={(durSeconds) => {
+                            setMeasuredVideoSeconds((prev) =>
+                              prev[activeVideo.id] === durSeconds
+                                ? prev
+                                : { ...prev, [activeVideo.id]: durSeconds }
+                            );
+                          }}
+                          onProgressRatio={(ratio) => {
+                            if (
+                              canAccessActiveLesson &&
+                              ratio >= 0.8 &&
+                              !isCurrentLessonDone
+                            ) {
+                              onMarkLessonComplete?.(activeLesson.id);
+                            }
+                          }}
+                          onEnded={() => {
+                            if (canAccessActiveLesson && !isCurrentLessonDone) {
+                              onMarkLessonComplete?.(activeLesson.id);
+                            }
+                          }}
+                        />
+                      );
+                    }
                     if (resolved.kind === 'iframe') {
                       return (
                         <div>
@@ -571,11 +608,7 @@ export function ClassroomView({
                             />
                           </div>
                           <div className="px-4 py-2.5 bg-slate-900 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
-                            <span>
-                              {resolved.isYouTube
-                                ? 'مشغل يوتيوب (يدعم الفيديوهات غير المدرجة والعادية)'
-                                : 'مشغل فيديو مضمّن'}
-                            </span>
+                            <span>مشغل فيديو مضمّن</span>
                             <a
                               href={resolved.watchUrl}
                               target="_blank"
@@ -583,7 +616,7 @@ export function ClassroomView({
                               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-blue-300 bg-slate-800 border border-slate-700 rounded-md hover:bg-slate-700 hover:text-white transition-colors"
                             >
                               <ExternalLink className="w-3.5 h-3.5" />
-                              <span>{resolved.isYouTube ? 'فتح في يوتيوب' : 'فتح في نافذة خارجية'}</span>
+                              <span>فتح في نافذة خارجية</span>
                             </a>
                           </div>
                         </div>

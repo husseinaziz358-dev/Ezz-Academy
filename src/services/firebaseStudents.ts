@@ -73,6 +73,7 @@ function mapFirestoreToStudentRecord(
     id: uid,
     studentName: String(profileData.studentName ?? ''),
     studentPhone: String(contactData?.studentPhone ?? ''),
+    studentEmail: typeof contactData?.email === 'string' ? contactData.email : '',
     parentName: String(contactData?.parentName ?? ''),
     parentPhone: String(contactData?.parentPhone ?? ''),
     motherName: String(contactData?.motherName ?? ''),
