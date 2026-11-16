@@ -1916,7 +1916,7 @@ export function SupervisorDashboard({
                   <img
                     src={teacherImage}
                     alt="معاينة صورة المدرس"
-                    className="w-full h-full object-cover object-top"
+                    className="w-full h-full object-contain bg-slate-900"
                   />
                 </div>
               )}
@@ -2016,7 +2016,7 @@ export function SupervisorDashboard({
                             src={t.image}
                             alt={t.name}
                             fallbackTitle={t.name}
-                            className="w-full h-full object-cover object-top"
+                            className="w-full h-full object-contain bg-slate-900"
                           />
                         </div>
                         <div className="p-4 space-y-2">
@@ -2844,7 +2844,7 @@ export function SupervisorDashboard({
                                 return (
                                   <div
                                     key={vid.id}
-                                    className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3"
+                                    className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                                   >
                                     <div className="flex items-center gap-2.5 min-w-0 flex-1">
                                       {ytMeta ? (
@@ -3052,7 +3052,7 @@ export function SupervisorDashboard({
                                 return (
                                   <div
                                     key={att.id}
-                                    className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3"
+                                    className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                                   >
                                     <div className="min-w-0 flex-1 space-y-0.5">
                                       <div className="flex flex-wrap items-center gap-2">
@@ -4968,7 +4968,7 @@ export function SupervisorDashboard({
                   />
                   {editTeacherImage && (
                     <div className="mt-2 w-20 h-20 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800">
-                      <img src={editTeacherImage} alt="معاينة" className="w-full h-full object-cover object-top" />
+                      <img src={editTeacherImage} alt="معاينة" className="w-full h-full object-contain bg-slate-900" />
                     </div>
                   )}
                 </div>

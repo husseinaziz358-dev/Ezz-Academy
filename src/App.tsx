@@ -1491,7 +1491,7 @@ export default function App() {
                                   src={inst.image}
                                   alt={inst.name}
                                   fallbackTitle={inst.name}
-                                  className="w-full h-full object-cover object-top"
+                                  className="w-full h-full object-contain bg-slate-900"
                                 />
                               </div>
                               <div className="min-w-0 flex-1">
@@ -1767,7 +1767,7 @@ export default function App() {
                                   src={inst.image}
                                   alt={inst.name}
                                   fallbackTitle={inst.name}
-                                  className="w-full h-full object-cover object-top"
+                                  className="w-full h-full object-contain bg-slate-900"
                                 />
                               </div>
                               <span className="text-slate-700 dark:text-slate-300 font-semibold truncate">
@@ -2007,7 +2007,7 @@ export default function App() {
                               src={teacher.image}
                               alt={teacher.name}
                               fallbackTitle={teacher.name}
-                              className="w-full h-full object-cover object-top"
+                              className="w-full h-full object-contain bg-slate-900"
                             />
                           </div>
 
