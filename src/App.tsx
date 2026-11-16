@@ -44,6 +44,7 @@ import {
 import {
   DynamicTeacher,
   EDUCATIONAL_STAGES,
+  LessonExamResult,
   StudentDeviceInfo,
   StudentNotification,
   StudentRecord,
@@ -102,6 +103,7 @@ interface SessionState {
   attendanceDates: Record<string, string>;
   notesByLesson: Record<string, string>;
   quizAnswers: Record<string, number>;
+  examResults: Record<string, LessonExamResult>;
   walletBalance: number;
   autoBlockExempt: boolean;
   activeDeviceIds: string[];
@@ -128,6 +130,7 @@ const DEFAULT_SESSION: SessionState = {
   attendanceDates: {},
   notesByLesson: {},
   quizAnswers: {},
+  examResults: {},
   walletBalance: 0,
   autoBlockExempt: false,
   activeDeviceIds: [],
@@ -222,6 +225,10 @@ export default function App() {
               : DEFAULT_SESSION.attendanceDates,
           notesByLesson: parsed.notesByLesson ?? DEFAULT_SESSION.notesByLesson,
           quizAnswers: parsed.quizAnswers ?? DEFAULT_SESSION.quizAnswers,
+          examResults:
+            parsed.examResults && typeof parsed.examResults === 'object'
+              ? parsed.examResults
+              : DEFAULT_SESSION.examResults,
           walletBalance:
             typeof parsed.walletBalance === 'number' ? parsed.walletBalance : 0,
           autoBlockExempt: parsed.autoBlockExempt === true,
@@ -361,6 +368,7 @@ export default function App() {
       completedLessonIds: nextSession.completedLessonIds,
       notesByLesson: nextSession.notesByLesson,
       quizAnswers: nextSession.quizAnswers,
+      examResults: nextSession.examResults,
       attendanceRate: autoAttendance.rate,
       attendanceDates: nextSession.attendanceDates,
     };
@@ -420,6 +428,7 @@ export default function App() {
             completedLessonIds: fresh.completedLessonIds,
             notesByLesson: fresh.notesByLesson,
             quizAnswers: fresh.quizAnswers,
+            examResults: fresh.examResults ?? {},
             attendanceRate: fresh.attendanceRate,
             attendanceDates: fresh.attendanceDates,
             activeDeviceIds: mergedDevices.activeDeviceIds,
@@ -439,6 +448,7 @@ export default function App() {
           walletBalance: fresh.walletBalance ?? 0,
           autoBlockExempt: fresh.autoBlockExempt === true,
           unlockedCourseIds: fresh.unlockedCourseIds,
+          examResults: fresh.examResults ?? prev.examResults,
           activeDeviceIds: mergedDevices.activeDeviceIds,
           deviceDetails: mergedDevices.deviceDetails,
           notifications: fresh.notifications ?? prev.notifications,
@@ -504,6 +514,7 @@ export default function App() {
       walletBalance: fresh.walletBalance ?? 0,
       autoBlockExempt: fresh.autoBlockExempt === true,
       unlockedCourseIds: fresh.unlockedCourseIds,
+      examResults: fresh.examResults ?? prev.examResults,
       activeDeviceIds: fresh.activeDeviceIds ?? prev.activeDeviceIds,
       deviceDetails: fresh.deviceDetails ?? prev.deviceDetails,
       notifications: fresh.notifications ?? prev.notifications,
@@ -659,6 +670,36 @@ export default function App() {
     }));
   };
 
+  const handleSubmitLessonExam = (
+    lessonId: string,
+    answers: Record<string, number>,
+    result: LessonExamResult
+  ) => {
+    const todayKey = getTodayDateKey();
+    commitStudentSessionUpdate((prev) => {
+      if (prev.role === 'supervisor') return null;
+      const alreadyCompleted = prev.completedLessonIds.includes(lessonId);
+      return {
+        ...prev,
+        quizAnswers: {
+          ...prev.quizAnswers,
+          ...answers,
+        },
+        examResults: {
+          ...prev.examResults,
+          [lessonId]: result,
+        },
+        completedLessonIds: alreadyCompleted
+          ? prev.completedLessonIds
+          : [...prev.completedLessonIds, lessonId],
+        attendanceDates: {
+          ...prev.attendanceDates,
+          [lessonId]: prev.attendanceDates[lessonId] || todayKey,
+        },
+      };
+    });
+  };
+
   const handleStudentAuthenticated = (student: StudentRecord, token: string) => {
     if (student.approvalStatus === 'pending') {
       setBlockedBanner(
@@ -700,6 +741,7 @@ export default function App() {
           completedLessonIds: student.completedLessonIds,
           notesByLesson: student.notesByLesson,
           quizAnswers: student.quizAnswers,
+          examResults: student.examResults ?? {},
           attendanceRate: student.attendanceRate,
           attendanceDates: student.attendanceDates ?? {},
           activeDeviceIds: mergedDevices.activeDeviceIds,
@@ -728,6 +770,7 @@ export default function App() {
       attendanceDates: student.attendanceDates ?? {},
       notesByLesson: student.notesByLesson,
       quizAnswers: student.quizAnswers,
+      examResults: student.examResults ?? {},
       walletBalance: student.walletBalance ?? 0,
       autoBlockExempt: student.autoBlockExempt === true,
       activeDeviceIds: mergedDevices.activeDeviceIds,
@@ -742,6 +785,7 @@ export default function App() {
         completedLessonIds: student.completedLessonIds,
         notesByLesson: student.notesByLesson,
         quizAnswers: student.quizAnswers,
+        examResults: student.examResults ?? {},
         attendanceRate: student.attendanceRate,
         attendanceDates: student.attendanceDates ?? {},
         activeDeviceIds: mergedDevices.activeDeviceIds,
@@ -902,6 +946,7 @@ export default function App() {
           completedLessonIds: cur.completedLessonIds,
           notesByLesson: cur.notesByLesson,
           quizAnswers: cur.quizAnswers,
+          examResults: cur.examResults,
           attendanceRate: autoAttendance.rate,
           attendanceDates: cur.attendanceDates,
           walletBalance: nextBalance,
@@ -1220,14 +1265,17 @@ export default function App() {
           <ClassroomView
             course={activeCourse}
             instructorName={resolveInstructorName(activeCourse.instructorId)}
+            instructorImage={resolveInstructorInfo(activeCourse.instructorId).image}
             isUnlocked={
               session.role === 'supervisor' ||
               session.unlockedCourseIds.includes(activeCourse.id)
             }
+            isSupervisor={session.role === 'supervisor'}
             completedLessonIds={session.completedLessonIds}
             attendanceDates={session.attendanceDates}
             notesByLesson={session.notesByLesson}
             quizAnswers={session.quizAnswers}
+            examResults={session.examResults}
             studentName={
               session.role === 'supervisor'
                 ? session.supervisorName || 'المشرف العام'
@@ -1247,7 +1295,9 @@ export default function App() {
             onRecordLessonAttendance={handleRecordLessonAttendance}
             onSaveNote={handleSaveNote}
             onRecordQuizAnswer={handleRecordQuizAnswer}
+            onSubmitLessonExam={handleSubmitLessonExam}
             onBackToCatalog={() => navigateTo('courses')}
+            onRequireLogin={() => setShowAuthModal(true)}
             isStudent={session.role === 'student'}
             walletBalance={session.walletBalance}
             onPurchaseCourse={() => handlePurchaseCourse(activeCourse)}
@@ -1269,6 +1319,7 @@ export default function App() {
             attendanceDates={session.attendanceDates}
             notesByLesson={session.notesByLesson}
             quizAnswers={session.quizAnswers}
+            examResults={session.examResults}
             notifications={session.notifications}
             onMarkNotificationsRead={handleMarkNotificationsRead}
             onOpenCourse={openCourse}
@@ -1689,7 +1740,7 @@ export default function App() {
                                   ? doneCount > 0
                                     ? 'متابعة الحصص'
                                     : 'دخول القاعة'
-                                  : 'معاينة الحصة الأولى'}
+                                  : 'معاينة الكورس'}
                               </span>
                             </button>
 

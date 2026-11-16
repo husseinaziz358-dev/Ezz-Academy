@@ -63,6 +63,7 @@ service cloud.firestore {
         'unlockedCourseIds',
         'completedLessonIds',
         'quizAnswers',
+        'examResults',
         'notesByLesson',
         'supervisorNotes',
         'attendanceRate',
@@ -100,6 +101,7 @@ service cloud.firestore {
       && (data.completedLessonIds.size() == 0 || data.completedLessonIds[0] is string)
       && data.quizAnswers is map
       && data.quizAnswers.size() <= 200
+      && (!('examResults' in data) || (data.examResults is map && data.examResults.size() <= 200))
       && data.notesByLesson is map
       && data.notesByLesson.size() <= 200
       && data.supervisorNotes is string
@@ -230,6 +232,7 @@ service cloud.firestore {
               'unlockedCourseIds',
               'completedLessonIds',
               'quizAnswers',
+              'examResults',
               'notesByLesson',
               'attendanceRate',
               'attendanceDates',

@@ -77,6 +77,10 @@
           "type": "object",
           "description": "Map of lesson IDs to selected quiz option indices."
         },
+        "examResults": {
+          "type": "object",
+          "description": "Map of lesson IDs to submitted lesson exam score summary objects."
+        },
         "notesByLesson": {
           "type": "object",
           "description": "Map of lesson IDs to student study notes."

@@ -14,6 +14,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
 import {
+  LessonExamResult,
   StudentApprovalStatus,
   StudentDeviceInfo,
   StudentNotification,
@@ -50,6 +51,31 @@ function sanitizeText(val: string, maxLen: number): string {
 function sanitizePhone(val: string): string {
   const normalized = normalizeDigits(val).replace(/[^0-9+]/g, '');
   return normalized.slice(0, MAX_PHONE_LENGTH);
+}
+
+function sanitizeExamResultsMap(raw: unknown): Record<string, LessonExamResult> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, LessonExamResult> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>).slice(0, 200)) {
+    if (!k.trim() || !v || typeof v !== 'object') continue;
+    const item = v as Record<string, unknown>;
+    const totalQuestions = Math.max(1, Math.min(500, Math.round(Number(item.totalQuestions) || 1)));
+    const correctCount = Math.max(0, Math.min(totalQuestions, Math.round(Number(item.correctCount) || 0)));
+    const wrongCount = Math.max(0, Math.min(totalQuestions, Math.round(Number(item.wrongCount) || 0)));
+    const scorePercent = Math.max(0, Math.min(100, Math.round(Number(item.scorePercent) || 0)));
+    out[k.slice(0, 128)] = {
+      scorePercent,
+      correctCount,
+      wrongCount,
+      totalQuestions,
+      passed: item.passed === true,
+      submittedAt:
+        typeof item.submittedAt === 'string' && item.submittedAt.trim()
+          ? item.submittedAt.trim().slice(0, 64)
+          : new Date().toISOString(),
+    };
+  }
+  return out;
 }
 
 function mapFirestoreToStudentRecord(
@@ -91,6 +117,7 @@ function mapFirestoreToStudentRecord(
       profileData.quizAnswers && typeof profileData.quizAnswers === 'object'
         ? (profileData.quizAnswers as Record<string, number>)
         : {},
+    examResults: sanitizeExamResultsMap(profileData.examResults),
     notesByLesson:
       profileData.notesByLesson && typeof profileData.notesByLesson === 'object'
         ? (profileData.notesByLesson as Record<string, string>)
@@ -349,6 +376,7 @@ export async function createFirebaseStudentProfile(
     unlockedCourseIds,
     completedLessonIds: [],
     quizAnswers: {},
+    examResults: {},
     notesByLesson: {},
     supervisorNotes,
     attendanceRate: 0,
@@ -401,6 +429,7 @@ export async function createFirebaseStudentProfile(
       unlockedCourseIds,
       completedLessonIds: [],
       quizAnswers: {},
+      examResults: {},
       notesByLesson: {},
       supervisorNotes,
       attendanceRate: 0,
@@ -425,6 +454,7 @@ export async function syncFirebaseStudentProgress(
     completedLessonIds: string[];
     notesByLesson: Record<string, string>;
     quizAnswers: Record<string, number>;
+    examResults?: Record<string, LessonExamResult>;
     attendanceRate: number;
     attendanceDates?: Record<string, string>;
     walletBalance?: number;
@@ -456,6 +486,9 @@ export async function syncFirebaseStudentProgress(
     attendanceDates: cleanAttendanceDates,
     updatedAt: serverTimestamp(),
   };
+  if (updates.examResults && typeof updates.examResults === 'object') {
+    updatePayload.examResults = sanitizeExamResultsMap(updates.examResults);
+  }
   if (typeof updates.walletBalance === 'number' && Number.isFinite(updates.walletBalance)) {
     updatePayload.walletBalance = Math.max(0, Math.round(updates.walletBalance));
   }

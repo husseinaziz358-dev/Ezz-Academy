@@ -3,6 +3,10 @@ import { Course, getInstructorById } from '../data/academyData';
 
 interface CertificateModalProps {
   course: Course;
+  lessonId?: string;
+  lessonTitle?: string;
+  examScorePercent?: number;
+  submittedAt?: string;
   studentName: string;
   instructorName?: string;
   onUpdateStudentName: (name: string) => void;
@@ -11,19 +15,26 @@ interface CertificateModalProps {
 
 export function CertificateModal({
   course,
+  lessonId,
+  lessonTitle,
+  examScorePercent,
+  submittedAt,
   studentName,
   instructorName,
   onUpdateStudentName,
   onClose,
 }: CertificateModalProps) {
   const resolvedInstructorName = instructorName || getInstructorById(course.instructorId).name;
+  const parsedDate = submittedAt ? new Date(submittedAt) : new Date();
   const issueDate = new Intl.DateTimeFormat('ar-EG', {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
-  }).format(new Date());
+  }).format(Number.isNaN(parsedDate.getTime()) ? new Date() : parsedDate);
 
-  const certificateCode = `EZZ-${course.id.slice(-4).toUpperCase()}-2026`;
+  const codeSuffix = (lessonId || course.id).slice(-4).toUpperCase();
+  const certificateCode = `EZZ-${codeSuffix}-2026`;
+  const isLessonExamCert = Boolean(lessonTitle);
 
   return (
     <div
@@ -38,14 +49,14 @@ export function CertificateModal({
             <div className="flex items-center gap-2 text-slate-900 dark:text-white min-w-0">
               <Award className="w-5 h-5 text-blue-700 dark:text-blue-400 shrink-0" />
               <h3 id="certificate-title" className="text-base sm:text-lg font-bold truncate">
-                شهادة إتمام رسمية
+                {isLessonExamCert ? 'شهادة اجتياز امتحان الحصة' : 'شهادة إتمام رسمية'}
               </h3>
             </div>
             <button
               type="button"
               onClick={onClose}
               aria-label="إغلاق نافذة الشهادة"
-              className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+              className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -67,17 +78,38 @@ export function CertificateModal({
 
           <div className="border-2 border-slate-900 dark:border-slate-700 rounded-lg p-5 sm:p-10 bg-slate-50 dark:bg-slate-950 text-center">
             <div className="text-xs font-mono tracking-widest text-blue-700 dark:text-blue-400 uppercase mb-3">
-              EZZ ACADEMY · CERTIFICATE OF COMPLETION
+              EZZ ACADEMY · {isLessonExamCert ? 'LESSON EXAM CERTIFICATE' : 'CERTIFICATE OF COMPLETION'}
             </div>
             <h4 className="text-xl sm:text-3xl font-bold text-slate-900 dark:text-white mb-4">
-              شهادة إتمام مسار تدريبي
+              {isLessonExamCert ? 'شهادة اجتياز امتحان الحصة' : 'شهادة إتمام مسار تدريبي'}
             </h4>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">تشهد منصة Ezz Academy بأن المتعلم</p>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">تشهد منصة Ezz Academy بأن الطالب</p>
             <div className="text-xl sm:text-2xl font-bold text-blue-800 dark:text-blue-300 mb-4">
-              {studentName.trim() || 'متعلم Ezz Academy'}
+              {studentName.trim() || 'طالب Ezz Academy'}
             </div>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">قد أتم بنجاح جميع متطلبات ومختبرات دورة</p>
-            <div className="text-base sm:text-lg font-semibold text-slate-900 dark:text-white mb-6">{course.title}</div>
+            {isLessonExamCert ? (
+              <>
+                <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">
+                  قد اجتاز بنجاح امتحان حصة
+                </p>
+                <div className="text-base sm:text-lg font-bold text-slate-900 dark:text-white mb-1">
+                  {lessonTitle}
+                </div>
+                <div className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mb-4">
+                  ضمن كورس: {course.title}
+                </div>
+                {typeof examScorePercent === 'number' && (
+                  <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-sm font-bold mb-6 tabular-nums">
+                    <span>درجة النجاح في الامتحان: {examScorePercent}%</span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">قد أتم بنجاح جميع متطلبات ومختبرات دورة</p>
+                <div className="text-base sm:text-lg font-semibold text-slate-900 dark:text-white mb-6">{course.title}</div>
+              </>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-6 border-t border-slate-300 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400">
               <div>

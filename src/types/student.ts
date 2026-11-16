@@ -23,6 +23,15 @@ export interface StudentDeviceInfo {
 
 export type StudentApprovalStatus = 'pending' | 'approved' | 'rejected';
 
+export interface LessonExamResult {
+  scorePercent: number;
+  correctCount: number;
+  wrongCount: number;
+  totalQuestions: number;
+  passed: boolean;
+  submittedAt: string;
+}
+
 export interface StudentRecord {
   id: string;
   studentName: string;
@@ -38,6 +47,7 @@ export interface StudentRecord {
   unlockedCourseIds: string[];
   completedLessonIds: string[];
   quizAnswers: Record<string, number>;
+  examResults?: Record<string, LessonExamResult>;
   notesByLesson: Record<string, string>;
   supervisorNotes: string;
   attendanceRate: number;

@@ -11,7 +11,7 @@ import {
   type Course,
 } from './src/data/academyData';
 import { computeStudentAttendance } from './src/utils/attendance';
-import type { StudentDeviceInfo } from './src/types/student';
+import type { LessonExamResult, StudentDeviceInfo } from './src/types/student';
 import {
   mergeStudentDeviceEntry,
   parseUserAgentDetails,
@@ -72,6 +72,7 @@ export interface StudentRecord {
   unlockedCourseIds: string[];
   completedLessonIds: string[];
   quizAnswers: Record<string, number>;
+  examResults?: Record<string, LessonExamResult>;
   notesByLesson: Record<string, string>;
   supervisorNotes: string;
   attendanceRate: number;
@@ -86,6 +87,31 @@ export interface StudentRecord {
   notifications?: StudentNotificationRecord[];
   createdAt: string;
   updatedAt: string;
+}
+
+function sanitizeExamResultsMap(raw: unknown): Record<string, LessonExamResult> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, LessonExamResult> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>).slice(0, 200)) {
+    if (!k.trim() || !v || typeof v !== 'object') continue;
+    const item = v as Record<string, unknown>;
+    const totalQuestions = Math.max(1, Math.min(500, Math.round(Number(item.totalQuestions) || 1)));
+    const correctCount = Math.max(0, Math.min(totalQuestions, Math.round(Number(item.correctCount) || 0)));
+    const wrongCount = Math.max(0, Math.min(totalQuestions, Math.round(Number(item.wrongCount) || 0)));
+    const scorePercent = Math.max(0, Math.min(100, Math.round(Number(item.scorePercent) || 0)));
+    out[k.slice(0, 128)] = {
+      scorePercent,
+      correctCount,
+      wrongCount,
+      totalQuestions,
+      passed: item.passed === true,
+      submittedAt:
+        typeof item.submittedAt === 'string' && item.submittedAt.trim()
+          ? item.submittedAt.trim().slice(0, 64)
+          : new Date().toISOString(),
+    };
+  }
+  return out;
 }
 
 const AUTO_BLOCK_WARNING_TITLE = 'إنذار الحظر التلقائي — تعدد الأجهزة';
@@ -620,6 +646,7 @@ async function startServer() {
         unlockedCourseIds: [],
         completedLessonIds: [],
         quizAnswers: {},
+        examResults: {},
         notesByLesson: {},
         supervisorNotes: 'طلب تسجيل جديد — في انتظار موافقة المشرف.',
         attendanceRate: 0,
@@ -763,6 +790,7 @@ async function startServer() {
           req.body?.quizAnswers && typeof req.body.quizAnswers === 'object'
             ? (req.body.quizAnswers as Record<string, number>)
             : {},
+        examResults: sanitizeExamResultsMap(req.body?.examResults),
         notesByLesson:
           req.body?.notesByLesson && typeof req.body.notesByLesson === 'object'
             ? (req.body.notesByLesson as Record<string, string>)
@@ -866,6 +894,7 @@ async function startServer() {
               raw.quizAnswers && typeof raw.quizAnswers === 'object'
                 ? (raw.quizAnswers as Record<string, number>)
                 : {},
+            examResults: sanitizeExamResultsMap(raw.examResults),
             notesByLesson:
               raw.notesByLesson && typeof raw.notesByLesson === 'object'
                 ? (raw.notesByLesson as Record<string, string>)
@@ -994,6 +1023,10 @@ async function startServer() {
           req.body?.quizAnswers && typeof req.body.quizAnswers === 'object'
             ? req.body.quizAnswers
             : existing.quizAnswers,
+        examResults:
+          req.body?.examResults && typeof req.body.examResults === 'object'
+            ? sanitizeExamResultsMap(req.body.examResults)
+            : existing.examResults ?? {},
         notesByLesson:
           req.body?.notesByLesson && typeof req.body.notesByLesson === 'object'
             ? req.body.notesByLesson

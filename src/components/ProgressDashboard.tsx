@@ -7,7 +7,11 @@ import {
   getInstructorById,
 } from '../data/academyData';
 import { CertificateModal } from './CertificateModal';
-import { DynamicTeacher, StudentNotification } from '../types/student';
+import {
+  DynamicTeacher,
+  LessonExamResult,
+  StudentNotification,
+} from '../types/student';
 import {
   computeStudentAttendance,
   formatAttendanceDateArabic,
@@ -27,6 +31,7 @@ interface ProgressDashboardProps {
   attendanceDates?: Record<string, string>;
   notesByLesson: Record<string, string>;
   quizAnswers: Record<string, number>;
+  examResults?: Record<string, LessonExamResult>;
   notifications?: StudentNotification[];
   onMarkNotificationsRead?: (notificationIds?: string[]) => void;
   onOpenCourse: (courseId: string) => void;
@@ -47,13 +52,20 @@ export function ProgressDashboard({
   attendanceDates = {},
   notesByLesson,
   quizAnswers,
+  examResults = {},
   notifications = [],
   onMarkNotificationsRead,
   onOpenCourse,
   onLogout,
   onRequestDeleteAccount,
 }: ProgressDashboardProps) {
-  const [certCourse, setCertCourse] = useState<Course | null>(null);
+  const [certTarget, setCertTarget] = useState<{
+    course: Course;
+    lessonId: string;
+    lessonTitle: string;
+    scorePercent: number;
+    submittedAt: string;
+  } | null>(null);
   const allCatalogCourses = courses && courses.length > 0 ? courses : COURSES;
   const stageCourses = allCatalogCourses.filter((c) => c.grade === studentGrade);
   const visibleCourses = stageCourses.length > 0 ? stageCourses : allCatalogCourses;
@@ -312,24 +324,38 @@ export function ProgressDashboard({
                   <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
                     {doneCount} من {lessons.length} حصص مكتملة
                   </span>
-                  <div className="flex items-center gap-2">
-                    {pct === 100 && (
-                      <button
-                        type="button"
-                        onClick={() => setCertCourse(course)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
-                      >
-                        <Award className="w-3.5 h-3.5" />
-                        <span>الشهادة</span>
-                      </button>
-                    )}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {lessons
+                      .filter((les) => examResults[les.id]?.passed)
+                      .map((les) => {
+                        const res = examResults[les.id];
+                        return (
+                          <button
+                            key={les.id}
+                            type="button"
+                            onClick={() =>
+                              setCertTarget({
+                                course,
+                                lessonId: les.id,
+                                lessonTitle: les.title,
+                                scorePercent: res.scorePercent,
+                                submittedAt: res.submittedAt,
+                              })
+                            }
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors cursor-pointer"
+                          >
+                            <Award className="w-3.5 h-3.5" />
+                            <span>شهادة: {les.title}</span>
+                          </button>
+                        );
+                      })}
                     <button
                       type="button"
                       onClick={() => onOpenCourse(course.id)}
                       className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors cursor-pointer"
                     >
                       <BookOpen className="w-3.5 h-3.5" />
-                      <span>{isUnlocked ? 'استكمال الحصص' : 'معاينة الحصة الأولى'}</span>
+                      <span>{isUnlocked ? 'استكمال الحصص' : 'معاينة الكورس'}</span>
                     </button>
                   </div>
                 </div>
@@ -374,15 +400,19 @@ export function ProgressDashboard({
         )}
       </section>
 
-      {certCourse && (
+      {certTarget && (
         <CertificateModal
-          course={certCourse}
+          course={certTarget.course}
+          lessonId={certTarget.lessonId}
+          lessonTitle={certTarget.lessonTitle}
+          examScorePercent={certTarget.scorePercent}
+          submittedAt={certTarget.submittedAt}
           studentName={studentName}
           instructorName={
-            teachers.find((t) => t.id === certCourse.instructorId)?.name
+            teachers.find((t) => t.id === certTarget.course.instructorId)?.name
           }
           onUpdateStudentName={onUpdateStudentName}
-          onClose={() => setCertCourse(null)}
+          onClose={() => setCertTarget(null)}
         />
       )}
     </div>

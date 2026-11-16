@@ -1,6 +1,7 @@
 import {
   DynamicTeacher,
   EducationalStage,
+  LessonExamResult,
   StudentApprovalStatus,
   StudentNotification,
   StudentRecord,
@@ -526,6 +527,7 @@ export async function apiRegisterStudent(payload: {
     unlockedCourseIds: [],
     completedLessonIds: [],
     quizAnswers: {},
+    examResults: {},
     notesByLesson: {},
     supervisorNotes: 'طلب تسجيل جديد — في انتظار موافقة المشرف.',
     attendanceRate: 0,
@@ -570,6 +572,7 @@ export async function apiSyncPendingStudentSession(
     completedLessonIds: localStu.completedLessonIds,
     notesByLesson: localStu.notesByLesson,
     quizAnswers: localStu.quizAnswers,
+    examResults: localStu.examResults ?? {},
     attendanceRate: localStu.attendanceRate,
     attendanceDates: localStu.attendanceDates ?? {},
     activeDeviceIds: localStu.activeDeviceIds ?? [deviceId],
@@ -814,6 +817,7 @@ export async function apiSyncStudentProgress(
     completedLessonIds: string[];
     notesByLesson: Record<string, string>;
     quizAnswers: Record<string, number>;
+    examResults?: Record<string, LessonExamResult>;
     attendanceRate?: number;
     attendanceDates?: Record<string, string>;
   }
