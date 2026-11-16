@@ -43,7 +43,10 @@ import {
 import {
   Course,
   COURSES,
+  formatArabicDurationFromSeconds,
   getCourseAllLessons,
+  getCourseEffectiveSeconds,
+  getLessonEffectiveSeconds,
   INSTRUCTORS,
   Lesson,
   LessonAttachment,
@@ -91,6 +94,7 @@ import {
   isPdfAttachment,
   normalizeExternalUrl,
   parseYouTubeVideo,
+  readYouTubeDurationSeconds,
   resolvePdfAttachment,
 } from '../utils/mediaHelpers';
 
@@ -163,7 +167,11 @@ function readVideoDurationSeconds(src: string | File): Promise<number> {
 }
 
 function calcLessonDurationMinutes(videos: LessonVideo[]): number {
-  const totalSeconds = videos.reduce((sum, v) => sum + (v.durationSeconds || 0), 0);
+  const totalSeconds = videos.reduce(
+    (sum, v) =>
+      sum + (typeof v.durationSeconds === 'number' && v.durationSeconds > 0 ? v.durationSeconds : 0),
+    0
+  );
   return totalSeconds > 0 ? Math.max(1, Math.round(totalSeconds / 60)) : 0;
 }
 
@@ -198,11 +206,12 @@ function normalizeLessonForEditor(lesson: Lesson): Lesson {
         ];
 
   const videos = lesson.videos ? [...lesson.videos] : [];
-  const autoMinutes = calcLessonDurationMinutes(videos);
+  const derivedMinutes =
+    videos.length > 0 ? calcLessonDurationMinutes(videos) : lesson.durationMinutes || 0;
 
   return {
     ...lesson,
-    durationMinutes: autoMinutes > 0 ? autoMinutes : lesson.durationMinutes || 0,
+    durationMinutes: derivedMinutes,
     videos,
     attachments: lesson.attachments ? [...lesson.attachments] : [],
     examQuestions,
@@ -295,6 +304,8 @@ export function SupervisorDashboard({
   // Per-lesson draft inputs for adding video links & file links
   const [videoLinkTitleDraft, setVideoLinkTitleDraft] = useState<Record<string, string>>({});
   const [videoLinkUrlDraft, setVideoLinkUrlDraft] = useState<Record<string, string>>({});
+  const [videoLinkDurationDraft, setVideoLinkDurationDraft] = useState<Record<string, string>>({});
+  const [probingVideoLessonId, setProbingVideoLessonId] = useState<string | null>(null);
   const [videoUploadTitleDraft, setVideoUploadTitleDraft] = useState<Record<string, string>>({});
   const [fileLinkTitleDraft, setFileLinkTitleDraft] = useState<Record<string, string>>({});
   const [fileLinkUrlDraft, setFileLinkUrlDraft] = useState<Record<string, string>>({});
@@ -311,6 +322,67 @@ export function SupervisorDashboard({
       if (norm) setCourseCategory(norm);
     }
   }, [teachers, courseTeacherId]);
+
+  const editingCourseId = editingCourse?.id ?? null;
+
+  // Auto-detect missing video durations when opening a course in the editor
+  useEffect(() => {
+    if (!editingCourseId) return;
+    let cancelled = false;
+    const toProbe: Array<{ lessonId: string; videoId: string; ytId?: string; url?: string }> = [];
+    for (const les of editingLessons) {
+      for (const vid of les.videos ?? []) {
+        if (!vid.durationSeconds || vid.durationSeconds <= 0) {
+          const yt = parseYouTubeVideo(vid.url);
+          if (yt) {
+            toProbe.push({ lessonId: les.id, videoId: vid.id, ytId: yt.id });
+          } else if (!isExternalEmbedPlatformUrl(vid.url)) {
+            toProbe.push({ lessonId: les.id, videoId: vid.id, url: vid.url });
+          }
+        }
+      }
+    }
+    if (toProbe.length === 0) return;
+
+    const runProbe = async () => {
+      for (const item of toProbe) {
+        if (cancelled) return;
+        const sec = item.ytId
+          ? await readYouTubeDurationSeconds(item.ytId, 4500)
+          : item.url
+            ? await readVideoDurationSeconds(item.url)
+            : 0;
+        if (cancelled) return;
+        if (sec > 0) {
+          setEditingLessons((prev) =>
+            prev.map((les) => {
+              if (les.id !== item.lessonId) return les;
+              const nextVideos = (les.videos ?? []).map((v) =>
+                v.id === item.videoId && (!v.durationSeconds || v.durationSeconds <= 0)
+                  ? { ...v, durationSeconds: sec }
+                  : v
+              );
+              return {
+                ...les,
+                videos: nextVideos,
+                durationMinutes: calcLessonDurationMinutes(nextVideos),
+              };
+            })
+          );
+        }
+      }
+    };
+    void runProbe();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingCourseId]);
+
+  const editingCourseTotalSeconds = useMemo(
+    () => editingLessons.reduce((sum, les) => sum + getLessonEffectiveSeconds(les), 0),
+    [editingLessons]
+  );
 
   const allCourses = useMemo(
     () => mergeCatalogCourses(customCourses, COURSES, deletedCourseIds),
@@ -402,6 +474,7 @@ export function SupervisorDashboard({
         s.studentPhone.includes(q) ||
         s.parentName.toLowerCase().includes(q) ||
         s.parentPhone.includes(q) ||
+        (s.parentJob ?? '').toLowerCase().includes(q) ||
         s.motherName.toLowerCase().includes(q) ||
         s.specialization.toLowerCase().includes(q) ||
         matchesDevice;
@@ -910,10 +983,26 @@ export function SupervisorDashboard({
     const lesson = editingLessons.find((l) => l.id === lessonId);
     const nextNum = (lesson?.videos?.length ?? 0) + 1;
     const title = (videoLinkTitleDraft[lessonId] || '').trim() || `فيديو الشرح ${nextNum}`;
-    const durationSeconds =
-      yt || isExternalEmbedPlatformUrl(cleanedUrl)
-        ? 0
-        : await readVideoDurationSeconds(cleanedUrl);
+
+    const manualMinutesRaw = Number((videoLinkDurationDraft[lessonId] || '').trim());
+    let durationSeconds =
+      Number.isFinite(manualMinutesRaw) && manualMinutesRaw > 0
+        ? Math.round(manualMinutesRaw * 60)
+        : 0;
+
+    if (durationSeconds === 0) {
+      setProbingVideoLessonId(lessonId);
+      try {
+        if (yt) {
+          durationSeconds = await readYouTubeDurationSeconds(yt.id);
+        } else if (!isExternalEmbedPlatformUrl(cleanedUrl)) {
+          durationSeconds = await readVideoDurationSeconds(cleanedUrl);
+        }
+      } finally {
+        setProbingVideoLessonId(null);
+      }
+    }
+
     const newVideo: LessonVideo = {
       id: `vid-${Date.now()}`,
       title,
@@ -931,6 +1020,7 @@ export function SupervisorDashboard({
     });
     setVideoLinkTitleDraft((p) => ({ ...p, [lessonId]: '' }));
     setVideoLinkUrlDraft((p) => ({ ...p, [lessonId]: '' }));
+    setVideoLinkDurationDraft((p) => ({ ...p, [lessonId]: '' }));
     setEditorFeedback('');
   };
 
@@ -972,6 +1062,31 @@ export function SupervisorDashboard({
     } finally {
       setUploadingKey(null);
     }
+  };
+
+  const handleUpdateVideoDurationMinutes = (
+    lessonId: string,
+    videoId: string,
+    minutesInput: string
+  ) => {
+    const parsed = Number(minutesInput);
+    const nextSeconds =
+      Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed * 60) : 0;
+    updateLessonField(lessonId, (les) => {
+      const nextVideos = (les.videos ?? []).map((v) => {
+        if (v.id !== videoId) return v;
+        if (nextSeconds > 0) {
+          return { ...v, durationSeconds: nextSeconds };
+        }
+        const { durationSeconds: _omitted, ...rest } = v;
+        return rest;
+      });
+      return {
+        ...les,
+        videos: nextVideos,
+        durationMinutes: calcLessonDurationMinutes(nextVideos),
+      };
+    });
   };
 
   const handleRemoveVideo = (lessonId: string, videoId: string) => {
@@ -1127,10 +1242,14 @@ export function SupervisorDashboard({
           les.examQuestions && les.examQuestions.length > 0
             ? les.examQuestions
             : [les.quiz];
-        const autoMinutes = calcLessonDurationMinutes(les.videos ?? []);
+        const videos = les.videos ?? [];
+        const resolvedMinutes =
+          videos.length > 0
+            ? calcLessonDurationMinutes(videos)
+            : Math.max(0, Math.round(Number(les.durationMinutes) || 0));
         return {
           ...les,
-          durationMinutes: autoMinutes > 0 ? autoMinutes : les.durationMinutes || 0,
+          durationMinutes: resolvedMinutes,
           summary: '',
           keyTakeaways: [],
           examQuestions: qs,
@@ -1138,8 +1257,8 @@ export function SupervisorDashboard({
         };
       });
 
-      const totalMinutes = normalizedLessons.reduce(
-        (sum, les) => sum + (les.durationMinutes || 0),
+      const totalSeconds = normalizedLessons.reduce(
+        (sum, les) => sum + getLessonEffectiveSeconds(les),
         0
       );
 
@@ -1147,7 +1266,7 @@ export function SupervisorDashboard({
         ...editingCourse,
         subtitle: '',
         fallbackTitle: editingCourse.title.trim(),
-        totalHours: totalMinutes > 0 ? Math.max(1, Math.round(totalMinutes / 60)) : 0,
+        totalHours: totalSeconds > 0 ? Number((totalSeconds / 3600).toFixed(2)) : 0,
         modules: [
           {
             id: editingCourse.modules[0]?.id || `mod-${Date.now()}`,
@@ -1885,6 +2004,7 @@ export function SupervisorDashboard({
             <div className="space-y-3">
               {allCourses.map((c) => {
                 const lessonsCount = getCourseAllLessons(c).length;
+                const courseEffectiveSec = getCourseEffectiveSeconds(c);
                 const teacherInfo = resolveTeacherInfo(c.instructorId);
                 const isPendingDelete = pendingDeleteCourseIds.includes(c.id);
                 return (
@@ -1909,8 +2029,16 @@ export function SupervisorDashboard({
                         <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-blue-700 dark:text-blue-400">
                           <span>
                             {c.grade} · {normalizeSubjectCategory(c.category) || c.category} ·{' '}
-                            <span className="tabular-nums">{lessonsCount} حصة</span> ·{' '}
-                            <span className="tabular-nums">{c.priceEgp} ج.م</span>
+                            <span className="tabular-nums">{lessonsCount} حصة</span>
+                            {courseEffectiveSec > 0 && (
+                              <>
+                                {' · '}
+                                <span className="tabular-nums">
+                                  {formatArabicDurationFromSeconds(courseEffectiveSec)}
+                                </span>
+                              </>
+                            )}{' '}
+                            · <span className="tabular-nums">{c.priceEgp} ج.م</span>
                           </span>
                           {isPendingDelete && (
                             <span className="px-2 py-0.5 text-[10px] font-bold bg-red-100 dark:bg-red-950/80 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 rounded">
@@ -1983,6 +2111,17 @@ export function SupervisorDashboard({
                 <h2 className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white break-words">
                   التحكم في محتوى الكورس: {editingCourse.title}
                 </h2>
+                <div className="flex flex-wrap items-center gap-2.5 pt-1 text-xs">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-200 font-semibold tabular-nums">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>
+                      المدة الفعالة للكورس (من الحصص): {formatArabicDurationFromSeconds(editingCourseTotalSeconds)}
+                    </span>
+                  </span>
+                  <span className="text-slate-500 dark:text-slate-400 tabular-nums">
+                    {editingLessons.length} حصة
+                  </span>
+                </div>
               </div>
 
               <button
@@ -2193,6 +2332,7 @@ export function SupervisorDashboard({
                 const isExpanded = expandedLessonId === lesson.id;
                 const videos = lesson.videos ?? [];
                 const attachments = lesson.attachments ?? [];
+                const lessonEffectiveSec = getLessonEffectiveSeconds(lesson);
                 const examQuestions =
                   lesson.examQuestions && lesson.examQuestions.length > 0
                     ? lesson.examQuestions
@@ -2223,7 +2363,9 @@ export function SupervisorDashboard({
                             {lesson.title}
                           </div>
                           <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
-                            {lesson.durationMinutes > 0 ? `${lesson.durationMinutes} دقيقة · ` : ''}
+                            {lessonEffectiveSec > 0
+                              ? `${formatArabicDurationFromSeconds(lessonEffectiveSec)} · `
+                              : ''}
                             {videos.length} فيديو · {attachments.length} ملف ·{' '}
                             {examQuestions.length} سؤال امتحان
                           </div>
@@ -2267,17 +2409,39 @@ export function SupervisorDashboard({
 
                     {isExpanded && (
                       <div className="p-4 sm:p-6 space-y-6">
-                        {/* Lesson Title & Auto Duration Note */}
+                        {/* Lesson Title & Strict Duration Binding */}
                         <div className="space-y-2">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
                               عنوان الحصة
                             </label>
-                            <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
-                              {lesson.durationMinutes > 0
-                                ? `المدة التلقائية للحصة: ${lesson.durationMinutes} دقيقة`
-                                : 'مدة الحصة تُحسب تلقائيًا من الفيديوهات'}
-                            </span>
+                            {videos.length > 0 ? (
+                              <span className="text-xs font-medium text-blue-700 dark:text-blue-400 tabular-nums">
+                                المدة الفعلية للحصة (مربوطة بفيديوهات الحصة):{' '}
+                                {formatArabicDurationFromSeconds(lessonEffectiveSec)}
+                              </span>
+                            ) : (
+                              <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
+                                <label htmlFor={`les-dur-${lesson.id}`} className="font-medium">
+                                  مدة الحصة (بالدقائق):
+                                </label>
+                                <input
+                                  id={`les-dur-${lesson.id}`}
+                                  type="number"
+                                  min={0}
+                                  value={lesson.durationMinutes || ''}
+                                  placeholder="0"
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Math.round(Number(e.target.value) || 0));
+                                    updateLessonField(lesson.id, (les) => ({
+                                      ...les,
+                                      durationMinutes: val,
+                                    }));
+                                  }}
+                                  className="w-20 px-2 py-1 text-xs font-mono text-center bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md"
+                                />
+                              </div>
+                            )}
                           </div>
                           <input
                             type="text"
@@ -2302,7 +2466,7 @@ export function SupervisorDashboard({
                               </h4>
                             </div>
                             <span className="text-xs text-slate-500 dark:text-slate-400">
-                              يمكنك إضافة أكثر من فيديو (رفع أو لينك)
+                              مدة الحصة تُحسب تلقائيًا من مجموع مدد هذه الفيديوهات
                             </span>
                           </div>
 
@@ -2311,6 +2475,10 @@ export function SupervisorDashboard({
                               {videos.map((vid, vIdx) => {
                                 const ytMeta =
                                   vid.sourceType === 'link' ? parseYouTubeVideo(vid.url) : null;
+                                const vidMinutesValue =
+                                  vid.durationSeconds && vid.durationSeconds > 0
+                                    ? Math.max(1, Math.round(vid.durationSeconds / 60))
+                                    : '';
                                 return (
                                   <div
                                     key={vid.id}
@@ -2339,23 +2507,50 @@ export function SupervisorDashboard({
                                             )
                                           </span>
                                         </div>
-                                        <div
-                                          className="text-xs font-mono text-slate-500 dark:text-slate-400 truncate"
-                                          dir="ltr"
-                                        >
-                                          {vid.url.startsWith('data:')
-                                            ? 'ملف فيديو محفوظ محليًا'
-                                            : vid.url}
+                                        <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                                          <div
+                                            className="text-xs font-mono text-slate-500 dark:text-slate-400 truncate max-w-[220px] sm:max-w-xs"
+                                            dir="ltr"
+                                          >
+                                            {vid.url.startsWith('data:')
+                                              ? 'ملف فيديو محفوظ محليًا'
+                                              : vid.url}
+                                          </div>
+                                          {vid.durationSeconds && vid.durationSeconds > 0 && (
+                                            <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 tabular-nums">
+                                              · {formatArabicDurationFromSeconds(vid.durationSeconds)}
+                                            </span>
+                                          )}
                                         </div>
                                       </div>
                                     </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleRemoveVideo(lesson.id, vid.id)}
-                                      className="px-2.5 py-1.5 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 shrink-0 cursor-pointer"
-                                    >
-                                      حذف الفيديو
-                                    </button>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <div className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
+                                        <span>المدة (د):</span>
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          value={vidMinutesValue}
+                                          placeholder="تلقائي"
+                                          aria-label={`مدة فيديو ${vid.title} بالدقائق`}
+                                          onChange={(e) =>
+                                            handleUpdateVideoDurationMinutes(
+                                              lesson.id,
+                                              vid.id,
+                                              e.target.value
+                                            )
+                                          }
+                                          className="w-16 px-2 py-1 text-xs font-mono text-center bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md"
+                                        />
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRemoveVideo(lesson.id, vid.id)}
+                                        className="px-2.5 py-1.5 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 shrink-0 cursor-pointer"
+                                      >
+                                        حذف الفيديو
+                                      </button>
+                                    </div>
                                   </div>
                                 );
                               })}
@@ -2394,19 +2589,39 @@ export function SupervisorDashboard({
                                 placeholder="https://youtu.be/... أو youtube.com/watch?v=... أو كود التضمين"
                                 className="w-full px-3 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
                               />
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={videoLinkDurationDraft[lesson.id] ?? ''}
+                                  onChange={(e) =>
+                                    setVideoLinkDurationDraft((p) => ({
+                                      ...p,
+                                      [lesson.id]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="المدة بالدقائق (اختياري — تُقرأ تلقائيًا ليوتيوب)"
+                                  className="w-full px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
+                                />
+                              </div>
                               {(videoLinkUrlDraft[lesson.id] || '').trim().length > 0 &&
                                 parseYouTubeVideo(videoLinkUrlDraft[lesson.id] || '') && (
                                   <div className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded px-2.5 py-1">
-                                    تم التعرف على فيديو يوتيوب بنجاح (يعمل مع الفيديوهات غير المدرجة Unlisted).
+                                    تم التعرف على فيديو يوتيوب بنجاح (يتم قراءة المدة تلقائيًا ويدعم غير المدرج).
                                   </div>
                                 )}
                               <button
                                 type="button"
+                                disabled={probingVideoLessonId === lesson.id}
                                 onClick={() => void handleAddVideoLink(lesson.id)}
-                                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 cursor-pointer"
+                                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:opacity-60 cursor-pointer"
                               >
                                 <Plus className="w-3.5 h-3.5" />
-                                <span>إضافة لينك الفيديو</span>
+                                <span>
+                                  {probingVideoLessonId === lesson.id
+                                    ? 'جاري قراءة مدة الفيديو...'
+                                    : 'إضافة لينك الفيديو'}
+                                </span>
                               </button>
                             </div>
 
@@ -3020,6 +3235,12 @@ export function SupervisorDashboard({
                             </span>
                             )
                           </span>
+                          {stu.parentJob && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span>المهنة: {stu.parentJob}</span>
+                            </>
+                          )}
                           <span aria-hidden="true">·</span>
                           <span>اسم الأم: {stu.motherName}</span>
                         </div>
@@ -3257,6 +3478,11 @@ export function SupervisorDashboard({
                             >
                               {stu.parentPhone}
                             </div>
+                            {stu.parentJob && (
+                              <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                                المهنة: {stu.parentJob}
+                              </div>
+                            )}
                           </td>
                           <td className="py-4 px-4 text-slate-700 dark:text-slate-300">{stu.motherName}</td>
                           <td className="py-4 px-4">
@@ -3404,6 +3630,12 @@ export function SupervisorDashboard({
                     <span className="font-mono inline-block" dir="ltr">
                       {selectedStudent.parentPhone}
                     </span>
+                  </div>
+                </div>
+                <div className="min-w-0">
+                  <span className="text-slate-500 dark:text-slate-400">مهنة ولي الأمر:</span>
+                  <div className="font-semibold text-slate-900 dark:text-white mt-0.5 break-words">
+                    {selectedStudent.parentJob || 'غير محددة'}
                   </div>
                 </div>
                 <div className="min-w-0">

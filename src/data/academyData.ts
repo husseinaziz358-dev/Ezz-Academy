@@ -349,3 +349,82 @@ const FALLBACK_INSTRUCTOR: Instructor = {
 export function getInstructorById(id: string): Instructor {
   return INSTRUCTORS.find((i) => i.id === id) ?? FALLBACK_INSTRUCTOR;
 }
+
+export function getLessonVideosSeconds(
+  lesson: Pick<Lesson, 'videos'>,
+  measuredVideoSeconds?: Record<string, number>
+): number {
+  const videos = lesson.videos ?? [];
+  return videos.reduce((sum, v) => {
+    const measured = measuredVideoSeconds?.[v.id];
+    const sec =
+      typeof measured === 'number' && measured > 0
+        ? measured
+        : typeof v.durationSeconds === 'number' && v.durationSeconds > 0
+          ? v.durationSeconds
+          : 0;
+    return sum + sec;
+  }, 0);
+}
+
+export function getLessonEffectiveSeconds(
+  lesson: Pick<Lesson, 'videos' | 'durationMinutes'>,
+  measuredVideoSeconds?: Record<string, number>
+): number {
+  const videos = lesson.videos ?? [];
+  if (videos.length > 0) {
+    return getLessonVideosSeconds(lesson, measuredVideoSeconds);
+  }
+  return lesson.durationMinutes > 0 ? Math.round(lesson.durationMinutes * 60) : 0;
+}
+
+export function getLessonEffectiveMinutes(
+  lesson: Pick<Lesson, 'videos' | 'durationMinutes'>,
+  measuredVideoSeconds?: Record<string, number>
+): number {
+  const sec = getLessonEffectiveSeconds(lesson, measuredVideoSeconds);
+  return sec > 0 ? Math.max(1, Math.round(sec / 60)) : 0;
+}
+
+export function getCourseEffectiveSeconds(
+  course: Course,
+  measuredVideoSeconds?: Record<string, number>
+): number {
+  return getCourseAllLessons(course).reduce(
+    (sum, lesson) => sum + getLessonEffectiveSeconds(lesson, measuredVideoSeconds),
+    0
+  );
+}
+
+export function getCourseEffectiveMinutes(
+  course: Course,
+  measuredVideoSeconds?: Record<string, number>
+): number {
+  const sec = getCourseEffectiveSeconds(course, measuredVideoSeconds);
+  return sec > 0 ? Math.max(1, Math.round(sec / 60)) : 0;
+}
+
+export function getCourseEffectiveHours(
+  course: Course,
+  measuredVideoSeconds?: Record<string, number>
+): number {
+  const sec = getCourseEffectiveSeconds(course, measuredVideoSeconds);
+  return sec > 0 ? Number((sec / 3600).toFixed(2)) : 0;
+}
+
+export function formatArabicDurationFromSeconds(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return 'غير محدد';
+  if (totalSeconds < 60) return `${Math.round(totalSeconds)} ثانية`;
+  const totalMinutes = Math.round(totalSeconds / 60);
+  return formatArabicDurationFromMinutes(totalMinutes);
+}
+
+export function formatArabicDurationFromMinutes(totalMinutes: number): string {
+  if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return 'غير محدد';
+  const rounded = Math.round(totalMinutes);
+  const hours = Math.floor(rounded / 60);
+  const mins = rounded % 60;
+  if (hours > 0 && mins > 0) return `${hours} ساعة و ${mins} دقيقة`;
+  if (hours > 0) return `${hours} ساعة`;
+  return `${mins} دقيقة`;
+}

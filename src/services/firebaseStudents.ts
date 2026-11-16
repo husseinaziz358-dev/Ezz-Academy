@@ -1,4 +1,4 @@
-import { deleteUser, signInWithPopup, signOut } from 'firebase/auth';
+import { signInWithPopup, signOut } from 'firebase/auth';
 import {
   collection,
   deleteDoc,
@@ -102,6 +102,7 @@ function mapFirestoreToStudentRecord(
     studentEmail: typeof contactData?.email === 'string' ? contactData.email : '',
     parentName: String(contactData?.parentName ?? ''),
     parentPhone: String(contactData?.parentPhone ?? ''),
+    parentJob: String(contactData?.parentJob ?? ''),
     motherName: String(contactData?.motherName ?? ''),
     stage: String(profileData.stage ?? 'الصف الثالث الثانوي'),
     specializationType:
@@ -325,6 +326,7 @@ export async function createFirebaseStudentProfile(
     studentPhone: string;
     parentName: string;
     parentPhone: string;
+    parentJob?: string;
     motherName: string;
     stage: string;
     specialization: string;
@@ -338,6 +340,7 @@ export async function createFirebaseStudentProfile(
   const studentPhone = sanitizePhone(payload.studentPhone);
   const parentName = sanitizeText(payload.parentName, MAX_NAME_LENGTH);
   const parentPhone = sanitizePhone(payload.parentPhone);
+  const parentJob = sanitizeText(payload.parentJob ?? '', MAX_NAME_LENGTH);
   const motherName = sanitizeText(payload.motherName, MAX_NAME_LENGTH);
   const stage = sanitizeText(payload.stage, MAX_NAME_LENGTH);
   const specialization = sanitizeText(payload.specialization, MAX_NAME_LENGTH);
@@ -401,6 +404,9 @@ export async function createFirebaseStudentProfile(
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
+  if (parentJob) {
+    contactDoc.parentJob = parentJob;
+  }
   if (email.trim()) {
     contactDoc.email = email.trim().slice(0, MAX_EMAIL_LENGTH);
   }
@@ -422,6 +428,7 @@ export async function createFirebaseStudentProfile(
       studentPhone,
       parentName,
       parentPhone,
+      parentJob,
       motherName,
       stage,
       specializationType,
@@ -640,25 +647,6 @@ export async function deleteFirebaseStudent(studentUid: string): Promise<void> {
   try {
     await deleteDoc(doc(db, 'students', studentUid, 'private', 'contact')).catch(() => undefined);
     await deleteDoc(doc(db, 'students', studentUid));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `students/${studentUid}`);
-  }
-}
-
-export async function deleteFirebaseSelfAccount(studentUid: string): Promise<void> {
-  if (!auth.currentUser || auth.currentUser.uid !== studentUid || !ID_PATTERN.test(studentUid)) {
-    throw new Error('غير مصرح بحذف هذا الحساب.');
-  }
-  try {
-    const notifSnap = await getDocs(collection(db, 'students', studentUid, 'notifications')).catch(
-      () => null
-    );
-    if (notifSnap && !notifSnap.empty) {
-      await Promise.all(notifSnap.docs.map((d) => deleteDoc(d.ref).catch(() => undefined)));
-    }
-    await deleteDoc(doc(db, 'students', studentUid, 'private', 'contact')).catch(() => undefined);
-    await deleteDoc(doc(db, 'students', studentUid));
-    await deleteUser(auth.currentUser).catch(() => undefined);
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `students/${studentUid}`);
   }

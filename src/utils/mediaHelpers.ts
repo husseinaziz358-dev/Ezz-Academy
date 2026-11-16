@@ -241,3 +241,198 @@ export function resolvePdfAttachment(att: LessonAttachment): ResolvedPdfAttachme
     isGoogleDrive: false,
   };
 }
+
+export interface YTPlayerInstance {
+  playVideo: () => void;
+  pauseVideo: () => void;
+  seekTo: (seconds: number, allowSeekAhead: boolean) => void;
+  mute: () => void;
+  unMute: () => void;
+  isMuted: () => boolean;
+  setVolume: (volume: number) => void;
+  getVolume: () => number;
+  getDuration: () => number;
+  getCurrentTime: () => number;
+  getPlaybackRate: () => number;
+  setPlaybackRate: (rate: number) => void;
+  getAvailableQualityLevels: () => string[];
+  getPlaybackQuality: () => string;
+  setPlaybackQuality: (quality: string) => void;
+  getPlayerState: () => number;
+  unloadModule?: (moduleName: string) => void;
+  setOption?: (module: string, option: string, value: unknown) => void;
+  destroy: () => void;
+}
+
+export interface YTNamespace {
+  Player: new (
+    elementId: string | HTMLElement,
+    options: {
+      videoId: string;
+      host?: string;
+      width?: string | number;
+      height?: string | number;
+      playerVars?: Record<string, string | number | undefined>;
+      events?: {
+        onReady?: (event: { target: YTPlayerInstance }) => void;
+        onStateChange?: (event: { data: number; target: YTPlayerInstance }) => void;
+        onPlaybackQualityChange?: (event: { data: string; target: YTPlayerInstance }) => void;
+        onApiChange?: (event: { target: YTPlayerInstance }) => void;
+        onError?: (event: { data: number }) => void;
+      };
+    }
+  ) => YTPlayerInstance;
+  PlayerState?: {
+    UNSTARTED: number;
+    ENDED: number;
+    PLAYING: number;
+    PAUSED: number;
+    BUFFERING: number;
+    CUED: number;
+  };
+}
+
+declare global {
+  interface Window {
+    YT?: YTNamespace;
+    onYouTubeIframeAPIReady?: () => void;
+  }
+}
+
+let ytApiPromise: Promise<YTNamespace> | null = null;
+
+export function loadYouTubeIframeApi(): Promise<YTNamespace> {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('Window unavailable'));
+  }
+  if (window.YT && typeof window.YT.Player === 'function') {
+    return Promise.resolve(window.YT);
+  }
+  if (ytApiPromise) return ytApiPromise;
+
+  ytApiPromise = new Promise<YTNamespace>((resolve, reject) => {
+    const prevReady = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      if (typeof prevReady === 'function') prevReady();
+      if (window.YT && typeof window.YT.Player === 'function') {
+        resolve(window.YT);
+      }
+    };
+
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[src="https://www.youtube.com/iframe_api"]'
+    );
+    if (!existing) {
+      const script = document.createElement('script');
+      script.src = 'https://www.youtube.com/iframe_api';
+      script.async = true;
+      script.onerror = () => {
+        ytApiPromise = null;
+        reject(new Error('Failed to load YouTube IFrame API'));
+      };
+      document.head.appendChild(script);
+    }
+
+    const pollInterval = window.setInterval(() => {
+      if (window.YT && typeof window.YT.Player === 'function') {
+        window.clearInterval(pollInterval);
+        resolve(window.YT);
+      }
+    }, 100);
+
+    window.setTimeout(() => {
+      window.clearInterval(pollInterval);
+      if (!window.YT || typeof window.YT.Player !== 'function') {
+        ytApiPromise = null;
+        reject(new Error('Timed out loading YouTube IFrame API'));
+      }
+    }, 12000);
+  });
+
+  return ytApiPromise;
+}
+
+export async function readYouTubeDurationSeconds(
+  videoId: string,
+  timeoutMs = 6000
+): Promise<number> {
+  if (typeof window === 'undefined' || !videoId) return 0;
+  try {
+    const YT = await loadYouTubeIframeApi();
+    return await new Promise<number>((resolve) => {
+      const hostEl = document.createElement('div');
+      hostEl.style.position = 'fixed';
+      hostEl.style.left = '-9999px';
+      hostEl.style.top = '-9999px';
+      hostEl.style.width = '1px';
+      hostEl.style.height = '1px';
+      hostEl.style.opacity = '0';
+      hostEl.style.pointerEvents = 'none';
+      const innerEl = document.createElement('div');
+      hostEl.appendChild(innerEl);
+      document.body.appendChild(hostEl);
+
+      let player: YTPlayerInstance | null = null;
+      let settled = false;
+      let retryPoll: number | null = null;
+
+      const cleanup = () => {
+        if (retryPoll !== null) window.clearInterval(retryPoll);
+        window.clearTimeout(hardTimer);
+        if (player) {
+          try {
+            player.destroy();
+          } catch {
+            // ignore
+          }
+          player = null;
+        }
+        hostEl.remove();
+      };
+
+      const finish = (seconds: number) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds) : 0);
+      };
+
+      const hardTimer = window.setTimeout(() => finish(0), timeoutMs);
+
+      player = new YT.Player(innerEl, {
+        videoId,
+        host: 'https://www.youtube.com',
+        width: 1,
+        height: 1,
+        playerVars: {
+          controls: 0,
+          enablejsapi: 1,
+          playsinline: 1,
+          origin: window.location.origin,
+        },
+        events: {
+          onReady: (e) => {
+            const d = e.target.getDuration();
+            if (Number.isFinite(d) && d > 0) {
+              finish(d);
+              return;
+            }
+            let attempts = 0;
+            retryPoll = window.setInterval(() => {
+              attempts += 1;
+              const retried = e.target.getDuration();
+              if (Number.isFinite(retried) && retried > 0) {
+                finish(retried);
+              } else if (attempts >= 8) {
+                finish(0);
+              }
+            }, 200);
+          },
+          onError: () => finish(0),
+        },
+      });
+    });
+  } catch {
+    return 0;
+  }
+}

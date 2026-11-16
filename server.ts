@@ -64,6 +64,7 @@ export interface StudentRecord {
   studentPhone: string;
   parentName: string;
   parentPhone: string;
+  parentJob?: string;
   motherName: string;
   stage: string;
   specializationType: 'شعبة' | 'مسار';
@@ -571,6 +572,7 @@ async function startServer() {
       const studentPhone = normalizePhone(String(req.body?.studentPhone ?? ''));
       const parentName = String(req.body?.parentName ?? '').trim();
       const parentPhone = normalizePhone(String(req.body?.parentPhone ?? ''));
+      const parentJob = String(req.body?.parentJob ?? '').trim().slice(0, 120);
       const motherName = String(req.body?.motherName ?? '').trim();
       const stage = String(req.body?.stage ?? '').trim();
       const specialization = String(req.body?.specialization ?? '').trim();
@@ -581,6 +583,7 @@ async function startServer() {
         studentPhone.length < 8 ||
         !parentName ||
         parentPhone.length < 8 ||
+        !parentJob ||
         !motherName ||
         !stage ||
         !specialization ||
@@ -637,6 +640,7 @@ async function startServer() {
         studentPhone,
         parentName,
         parentPhone,
+        parentJob,
         motherName,
         stage,
         specializationType,
@@ -683,6 +687,7 @@ async function startServer() {
       const studentPhone = normalizePhone(String(req.body?.studentPhone ?? ''));
       const parentName = String(req.body?.parentName ?? '').trim();
       const parentPhone = normalizePhone(String(req.body?.parentPhone ?? ''));
+      const parentJob = String(req.body?.parentJob ?? '').trim().slice(0, 120);
       const motherName = String(req.body?.motherName ?? '').trim();
       const stage = String(req.body?.stage ?? '').trim();
       const specialization = String(req.body?.specialization ?? '').trim();
@@ -775,6 +780,7 @@ async function startServer() {
         studentPhone,
         parentName,
         parentPhone,
+        parentJob,
         motherName,
         stage,
         specializationType,
@@ -845,6 +851,7 @@ async function startServer() {
           const studentPhone = normalizePhone(String(raw.studentPhone ?? ''));
           const parentName = String(raw.parentName ?? '').trim();
           const parentPhone = normalizePhone(String(raw.parentPhone ?? ''));
+          const parentJob = String(raw.parentJob ?? '').trim().slice(0, 120);
           const motherName = String(raw.motherName ?? '').trim();
           const stage = String(raw.stage ?? '').trim();
           const specialization = String(raw.specialization ?? '').trim();
@@ -879,6 +886,7 @@ async function startServer() {
             studentPhone,
             parentName,
             parentPhone,
+            parentJob,
             motherName,
             stage,
             specializationType: stage === 'البكالوريا' ? 'مسار' : 'شعبة',
@@ -1373,36 +1381,6 @@ async function startServer() {
     }
   );
 
-  // Student: permanently delete own account
-  app.delete('/api/students/:id', async (req: Request, res: Response) => {
-    try {
-      const authHeader = req.headers.authorization || '';
-      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-      const decoded = verifyToken(token);
-      if (!decoded) {
-        res.status(401).json({ error: 'غير مصرح.' });
-        return;
-      }
-      const targetId = req.params.id;
-      if (decoded.role === 'student' && decoded.sub !== targetId) {
-        res.status(403).json({ error: 'لا يمكنك حذف حساب طالب آخر.' });
-        return;
-      }
-
-      const students = await ensureDb();
-      const nextStudents = students.filter((s) => s.id !== targetId);
-      if (nextStudents.length === students.length) {
-        res.status(404).json({ error: 'الحساب غير موجود.' });
-        return;
-      }
-      await saveDb(nextStudents);
-      res.json({ ok: true });
-    } catch (err) {
-      console.error('Student self delete error:', err);
-      res.status(500).json({ error: 'تعذر حذف الحساب نهائيًا.' });
-    }
-  });
-
   // Supervisor: send in-platform attendance/follow-up alert to selected students
   app.post('/api/supervisor/alerts', requireSupervisor, async (req: Request, res: Response) => {
     try {
@@ -1694,14 +1672,43 @@ async function startServer() {
               },
             ];
 
-      const totalMinutes = resolvedModules.reduce(
-        (acc: number, m: { lessons?: CustomCourseLessonRecord[] }) =>
-          acc +
-          (Array.isArray(m.lessons)
-            ? m.lessons.reduce((s, l) => s + (Number(l.durationMinutes) || 0), 0)
-            : 0),
-        0
-      );
+      const normalizeModulesDurations = (
+        modulesList: CustomCourseRecord['modules']
+      ): { modules: CustomCourseRecord['modules']; totalSeconds: number } => {
+        let totalSeconds = 0;
+        const normalizedModules = modulesList.map((m) => ({
+          ...m,
+          lessons: Array.isArray(m.lessons)
+            ? m.lessons.map((les) => {
+                const videos = Array.isArray(les.videos) ? les.videos : [];
+                let lessonSec = 0;
+                if (videos.length > 0) {
+                  lessonSec = videos.reduce(
+                    (sum, v) =>
+                      sum + (typeof v.durationSeconds === 'number' && v.durationSeconds > 0 ? v.durationSeconds : 0),
+                    0
+                  );
+                } else {
+                  lessonSec =
+                    typeof les.durationMinutes === 'number' && les.durationMinutes > 0
+                      ? Math.round(les.durationMinutes * 60)
+                      : 0;
+                }
+                const durationMinutes =
+                  lessonSec > 0 ? Math.max(1, Math.round(lessonSec / 60)) : 0;
+                totalSeconds += lessonSec;
+                return {
+                  ...les,
+                  durationMinutes,
+                };
+              })
+            : [],
+        }));
+        return { modules: normalizedModules, totalSeconds };
+      };
+
+      const { modules: normalizedModules, totalSeconds } =
+        normalizeModulesDurations(resolvedModules);
 
       const catalog = await ensureCatalogDb();
       const linkedTeacher = catalog.teachers.find((t) => t.id === instructorId);
@@ -1720,14 +1727,14 @@ async function startServer() {
         category: resolvedCategory,
         studyMode,
         priceEgp,
-        totalHours: totalMinutes > 0 ? Math.max(1, Math.round(totalMinutes / 60)) : 0,
+        totalHours: totalSeconds > 0 ? Number((totalSeconds / 3600).toFixed(2)) : 0,
         instructorId,
         image:
           image ||
           linkedTeacher?.image ||
           '/src/assets/images/course_math_calculus_1794779284413.jpg',
         fallbackTitle: title,
-        modules: resolvedModules,
+        modules: normalizedModules,
       };
 
       catalog.customCourses.unshift(newCourse);
@@ -1756,14 +1763,35 @@ async function startServer() {
           return;
         }
 
-        const totalMinutes = body.modules.reduce(
-          (acc, m) =>
-            acc +
-            (Array.isArray(m.lessons)
-              ? m.lessons.reduce((s, l) => s + (Number(l.durationMinutes) || 0), 0)
-              : 0),
-          0
-        );
+        let totalSeconds = 0;
+        const normalizedModules = body.modules.map((m) => ({
+          ...m,
+          lessons: Array.isArray(m.lessons)
+            ? m.lessons.map((les) => {
+                const videos = Array.isArray(les.videos) ? les.videos : [];
+                let lessonSec = 0;
+                if (videos.length > 0) {
+                  lessonSec = videos.reduce(
+                    (sum, v) =>
+                      sum + (typeof v.durationSeconds === 'number' && v.durationSeconds > 0 ? v.durationSeconds : 0),
+                    0
+                  );
+                } else {
+                  lessonSec =
+                    typeof les.durationMinutes === 'number' && les.durationMinutes > 0
+                      ? Math.round(les.durationMinutes * 60)
+                      : 0;
+                }
+                const durationMinutes =
+                  lessonSec > 0 ? Math.max(1, Math.round(lessonSec / 60)) : 0;
+                totalSeconds += lessonSec;
+                return {
+                  ...les,
+                  durationMinutes,
+                };
+              })
+            : [],
+        }));
 
         const catalog = await ensureCatalogDb();
         const linkedTeacher = catalog.teachers.find((t) => t.id === instructorId);
@@ -1783,17 +1811,14 @@ async function startServer() {
           category: resolvedCategory,
           studyMode: body.studyMode === 'أونلاين' ? 'أونلاين' : 'سنتر وأونلاين',
           priceEgp: Number(body.priceEgp) || 0,
-          totalHours:
-            totalMinutes > 0
-              ? Math.max(1, Math.round(totalMinutes / 60))
-              : Number(body.totalHours) || 0,
+          totalHours: totalSeconds > 0 ? Number((totalSeconds / 3600).toFixed(2)) : 0,
           instructorId,
           image:
             String(body.image ?? '').trim() ||
             linkedTeacher?.image ||
             '/src/assets/images/course_math_calculus_1794779284413.jpg',
           fallbackTitle: String(body.fallbackTitle ?? '').trim() || title,
-          modules: body.modules,
+          modules: normalizedModules,
         };
         const existingIdx = catalog.customCourses.findIndex((c) => c.id === courseId);
         if (existingIdx >= 0) {

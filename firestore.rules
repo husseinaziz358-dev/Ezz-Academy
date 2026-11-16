@@ -136,6 +136,7 @@ service cloud.firestore {
         'studentPhone',
         'parentName',
         'parentPhone',
+        'parentJob',
         'motherName',
         'email',
         'createdAt',
@@ -154,6 +155,7 @@ service cloud.firestore {
       && data.parentPhone.size() >= 8
       && data.parentPhone.size() <= 20
       && data.parentPhone.matches('^[0-9+]+$')
+      && (!('parentJob' in data) || (data.parentJob is string && data.parentJob.size() <= 120))
       && data.motherName is string
       && data.motherName.size() >= 2
       && data.motherName.size() <= 120
@@ -245,7 +247,7 @@ service cloud.firestore {
             ])
           )
         );
-      allow delete: if isValidId(studentUid) && (isOwner(studentUid) || isAdmin());
+      allow delete: if isValidId(studentUid) && isAdmin();
 
       match /private/{docId} {
         allow get: if isValidId(studentUid) && docId == 'contact' && (isOwner(studentUid) || isAdmin());
@@ -270,12 +272,13 @@ service cloud.firestore {
             'studentPhone',
             'parentName',
             'parentPhone',
+            'parentJob',
             'motherName',
             'email',
             'updatedAt'
           ])
           && get(/databases/$(database)/documents/students/$(studentUid)).data.uid == studentUid;
-        allow delete: if isValidId(studentUid) && docId == 'contact' && (isOwner(studentUid) || isAdmin());
+        allow delete: if isValidId(studentUid) && docId == 'contact' && isAdmin();
       }
 
       match /notifications/{notifId} {
@@ -305,7 +308,7 @@ service cloud.firestore {
               && incoming().diff(existing()).affectedKeys().hasOnly(['read'])
             )
           );
-        allow delete: if isValidId(studentUid) && isValidId(notifId) && (isOwner(studentUid) || isAdmin());
+        allow delete: if isValidId(studentUid) && isValidId(notifId) && isAdmin();
       }
     }
   }

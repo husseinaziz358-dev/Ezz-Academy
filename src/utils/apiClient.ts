@@ -302,6 +302,7 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
                 studentPhone: localStu.studentPhone,
                 parentName: localStu.parentName,
                 parentPhone: localStu.parentPhone,
+                parentJob: localStu.parentJob ?? '',
                 motherName: localStu.motherName,
                 stage: localStu.stage,
                 specialization: localStu.specialization,
@@ -438,6 +439,7 @@ export async function apiRegisterStudent(payload: {
   studentPhone: string;
   parentName: string;
   parentPhone: string;
+  parentJob: string;
   motherName: string;
   stage: string;
   specialization: string;
@@ -450,6 +452,7 @@ export async function apiRegisterStudent(payload: {
   const deviceInfo = getClientDeviceInfo(deviceId);
   const normalizedPayload = {
     ...payload,
+    parentJob: payload.parentJob.trim(),
     studentPhone: normalizeDigits(payload.studentPhone),
     parentPhone: normalizeDigits(payload.parentPhone),
     deviceId,
@@ -517,6 +520,7 @@ export async function apiRegisterStudent(payload: {
     studentPhone: normalizedPayload.studentPhone,
     parentName: payload.parentName.trim(),
     parentPhone: normalizedPayload.parentPhone,
+    parentJob: payload.parentJob.trim(),
     motherName: payload.motherName.trim(),
     stage: payload.stage,
     specializationType: payload.stage === 'البكالوريا' ? 'مسار' : 'شعبة',
@@ -565,6 +569,7 @@ export async function apiSyncPendingStudentSession(
     studentPhone: localStu.studentPhone,
     parentName: localStu.parentName,
     parentPhone: localStu.parentPhone,
+    parentJob: localStu.parentJob ?? '',
     motherName: localStu.motherName,
     stage: localStu.stage,
     specialization: localStu.specialization,
@@ -775,38 +780,6 @@ export async function apiDeleteSupervisorStudent(
   const list = getLocalStudents();
   saveLocalStudents(list.filter((s) => s.id !== studentId));
   return true;
-}
-
-export async function apiDeleteOwnStudentAccount(
-  studentId: string,
-  token: string
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  if (!token.startsWith('local-')) {
-    const serverRes = await tryServerJson<{ ok?: boolean; error?: string }>(
-      `/api/students/${studentId}`,
-      {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      }
-    );
-    if (serverRes) {
-      if (serverRes.ok || serverRes.status === 404) {
-        const list = getLocalStudents();
-        if (list.some((s) => s.id === studentId)) {
-          saveLocalStudents(list.filter((s) => s.id !== studentId));
-        }
-        return { ok: true };
-      }
-      return {
-        ok: false,
-        error: serverRes.data.error || 'تعذر حذف الحساب نهائيًا.',
-      };
-    }
-  }
-
-  const list = getLocalStudents();
-  saveLocalStudents(list.filter((s) => s.id !== studentId));
-  return { ok: true };
 }
 
 export async function apiSyncStudentProgress(
@@ -1441,15 +1414,60 @@ export async function apiUpdateCourse(
     return { ok: true, course: serverRes.data.course };
   }
 
+  const normalizedModules = course.modules.map((m) => ({
+    ...m,
+    lessons: m.lessons.map((les) => {
+      const videos = les.videos ?? [];
+      const lessonSec =
+        videos.length > 0
+          ? videos.reduce(
+              (sum, v) =>
+                sum + (typeof v.durationSeconds === 'number' && v.durationSeconds > 0 ? v.durationSeconds : 0),
+              0
+            )
+          : les.durationMinutes > 0
+            ? Math.round(les.durationMinutes * 60)
+            : 0;
+      return {
+        ...les,
+        durationMinutes: lessonSec > 0 ? Math.max(1, Math.round(lessonSec / 60)) : 0,
+      };
+    }),
+  }));
+  const totalSec = normalizedModules.reduce(
+    (sum, m) =>
+      sum +
+      m.lessons.reduce((s, les) => {
+        const videos = les.videos ?? [];
+        if (videos.length > 0) {
+          return (
+            s +
+            videos.reduce(
+              (vs, v) =>
+                vs + (typeof v.durationSeconds === 'number' && v.durationSeconds > 0 ? v.durationSeconds : 0),
+              0
+            )
+          );
+        }
+        return s + (les.durationMinutes > 0 ? les.durationMinutes * 60 : 0);
+      }, 0),
+    0
+  );
+  const syncedCourse: Course = {
+    ...course,
+    totalHours: totalSec > 0 ? Number((totalSec / 3600).toFixed(2)) : 0,
+    modules: normalizedModules,
+  };
+
   const catalog = getLocalCatalog();
-  const idx = catalog.customCourses.findIndex((c) => c.id === course.id);
+  const idx = catalog.customCourses.findIndex((c) => c.id === syncedCourse.id);
   if (idx >= 0) {
-    catalog.customCourses[idx] = course;
+    catalog.customCourses[idx] = syncedCourse;
   } else {
-    catalog.customCourses.unshift(course);
+    catalog.customCourses.unshift(syncedCourse);
   }
   saveLocalCatalog(catalog);
-  return { ok: true, course };
+  return { ok: true, course: syncedCourse };
 }
 
 export async function apiDeleteCourse(token: string, courseId: string): Promise<boolean> {

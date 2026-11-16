@@ -39,6 +39,7 @@ export interface StudentRecord {
   studentEmail?: string;
   parentName: string;
   parentPhone: string;
+  parentJob?: string;
   motherName: string;
   stage: string;
   specializationType: 'شعبة' | 'مسار';

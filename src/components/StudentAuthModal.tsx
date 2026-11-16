@@ -35,18 +35,21 @@ export function StudentAuthModal({
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [showRegisterPassword, setShowRegisterPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   // Registration state
   const [studentName, setStudentName] = useState('');
   const [studentPhone, setStudentPhone] = useState('');
   const [parentName, setParentName] = useState('');
   const [parentPhone, setParentPhone] = useState('');
+  const [parentJob, setParentJob] = useState('');
   const [motherName, setMotherName] = useState('');
   const [stage, setStage] = useState<EducationalStage>('الصف الثالث الثانوي');
   const [specialization, setSpecialization] = useState<string>(
     SECONDARY_BRANCHES['الصف الثالث الثانوي'][0]
   );
   const [registerPassword, setRegisterPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
 
   const handleStageChange = (nextStage: EducationalStage) => {
     setStage(nextStage);
@@ -95,8 +98,8 @@ export function StudentAuthModal({
 
     const normStudentPhone = normalizeDigits(studentPhone);
     const normParentPhone = normalizeDigits(parentPhone);
-    if (!studentName.trim() || !parentName.trim() || !motherName.trim()) {
-      setErrorMsg('يرجى إدخال اسم الطالب واسم ولي الأمر واسم الأم.');
+    if (!studentName.trim() || !parentName.trim() || !parentJob.trim() || !motherName.trim()) {
+      setErrorMsg('يرجى إدخال اسم الطالب واسم ولي الأمر ومهنة ولي الأمر واسم الأم.');
       return;
     }
     if (normStudentPhone.length < 8 || normParentPhone.length < 8) {
@@ -107,6 +110,10 @@ export function StudentAuthModal({
       setErrorMsg('يجب أن تكون كلمة المرور ٤ أحرف على الأقل.');
       return;
     }
+    if (registerPassword !== confirmPassword) {
+      setErrorMsg('كلمتا المرور غير متطابقتين.');
+      return;
+    }
 
     setLoading(true);
     try {
@@ -115,6 +122,7 @@ export function StudentAuthModal({
         studentPhone: normStudentPhone,
         parentName: parentName.trim(),
         parentPhone: normParentPhone,
+        parentJob: parentJob.trim(),
         motherName: motherName.trim(),
         stage,
         specialization,
@@ -450,6 +458,26 @@ export function StudentAuthModal({
 
               <div>
                 <label
+                  htmlFor="reg-parent-job"
+                  className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
+                >
+                  مهنة ولي الأمر
+                </label>
+                <input
+                  id="reg-parent-job"
+                  type="text"
+                  required
+                  value={parentJob}
+                  onChange={(e) => setParentJob(e.target.value)}
+                  placeholder="مثال: مهندس / طبيب / موظف"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div>
+                <label
                   htmlFor="reg-password"
                   className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
                 >
@@ -480,6 +508,51 @@ export function StudentAuthModal({
                     )}
                   </button>
                 </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="reg-confirm-password"
+                  className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
+                >
+                  تأكيد كلمة المرور
+                </label>
+                <div className="relative">
+                  <input
+                    id="reg-confirm-password"
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    dir="ltr"
+                    required
+                    minLength={4}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="••••••"
+                    className={`w-full pl-10 pr-3 py-2 text-sm font-mono bg-slate-50 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 border rounded-lg focus:outline-none focus:ring-2 ${
+                      confirmPassword && registerPassword !== confirmPassword
+                        ? 'border-red-400 dark:border-red-600 focus:ring-red-600'
+                        : 'border-slate-300 dark:border-slate-700 focus:ring-blue-700'
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword((s) => !s)}
+                    aria-label={
+                      showConfirmPassword ? 'إخفاء تأكيد كلمة المرور' : 'إظهار تأكيد كلمة المرور'
+                    }
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white"
+                  >
+                    {showConfirmPassword ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+                {confirmPassword && registerPassword !== confirmPassword && (
+                  <p className="mt-1 text-[11px] font-medium text-red-600 dark:text-red-400">
+                    كلمتا المرور غير متطابقتين
+                  </p>
+                )}
               </div>
             </div>
 

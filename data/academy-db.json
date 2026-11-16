@@ -1,4 +1,6 @@
 {
   "teachers": [],
-  "customCourses": []
+  "customCourses": [],
+  "deletedCourseIds": [],
+  "heroImage": ""
 }

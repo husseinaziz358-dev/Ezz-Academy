@@ -30,8 +30,11 @@ import {
 } from 'lucide-react';
 import {
   Course,
+  formatArabicDurationFromSeconds,
   getCourseAllLessons,
+  getCourseEffectiveSeconds,
   getInstructorById,
+  getLessonEffectiveSeconds,
   Lesson,
   LessonVideo,
   QuizQuestion,
@@ -44,6 +47,7 @@ import { formatAttendanceDateArabic, getTodayDateKey } from '../utils/attendance
 import {
   extractCleanVideoUrl,
   parseYouTubeVideo,
+  readYouTubeDurationSeconds,
   resolvePdfAttachment,
 } from '../utils/mediaHelpers';
 
@@ -252,15 +256,6 @@ function lessonHasExam(lesson: Lesson): boolean {
   return getRealExamQuestions(lesson).length > 0;
 }
 
-function formatMinutesArabic(totalMinutes: number): string {
-  if (!totalMinutes || totalMinutes <= 0) return 'غير محدد';
-  const hours = Math.floor(totalMinutes / 60);
-  const mins = Math.round(totalMinutes % 60);
-  if (hours > 0 && mins > 0) return `${hours} ساعة و ${mins} دقيقة`;
-  if (hours > 0) return `${hours} ساعة`;
-  return `${mins} دقيقة`;
-}
-
 function formatSecondsDigital(sec: number): string {
   if (!sec || sec <= 0) return '00:00';
   const hrs = Math.floor(sec / 3600);
@@ -301,7 +296,7 @@ export function ClassroomView({
   purchaseFeedback,
 }: ClassroomViewProps) {
   const allLessons = useMemo(() => getCourseAllLessons(course), [course]);
-  const [stageMode, setStageMode] = useState<'overview' | 'lesson'>('overview');
+  const [stageMode, setStageMode] = useState<'overview' | 'lesson' | 'exam'>('overview');
   const [expandedOverviewLessonId, setExpandedOverviewLessonId] = useState<string | null>(
     allLessons[0]?.id ?? null
   );
@@ -364,6 +359,41 @@ export function ClassroomView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [course.id]);
 
+  // Background probe for any YouTube videos missing saved durationSeconds so course & lesson totals are accurate
+  useEffect(() => {
+    let cancelled = false;
+    const unmeasuredYtVideos: Array<{ id: string; ytId: string }> = [];
+    for (const les of allLessons) {
+      for (const vid of les.videos ?? []) {
+        if ((!vid.durationSeconds || vid.durationSeconds <= 0) && !measuredVideoSeconds[vid.id]) {
+          const yt = parseYouTubeVideo(vid.url);
+          if (yt) {
+            unmeasuredYtVideos.push({ id: vid.id, ytId: yt.id });
+          }
+        }
+      }
+    }
+    if (unmeasuredYtVideos.length === 0) return;
+
+    const probeAll = async () => {
+      for (const item of unmeasuredYtVideos) {
+        if (cancelled) return;
+        const sec = await readYouTubeDurationSeconds(item.ytId, 4500);
+        if (cancelled) return;
+        if (sec > 0) {
+          setMeasuredVideoSeconds((prev) =>
+            prev[item.id] === sec ? prev : { ...prev, [item.id]: sec }
+          );
+        }
+      }
+    };
+    void probeAll();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [course.id, allLessons.length]);
+
   useEffect(() => {
     if (allLessons.length > 0 && !allLessons.some((l) => l.id === activeLessonId)) {
       setActiveLessonId(allLessons[0].id);
@@ -414,7 +444,7 @@ export function ClassroomView({
 
   const canEnterLesson = Boolean(
     activeLesson &&
-      stageMode === 'lesson' &&
+      (stageMode === 'lesson' || stageMode === 'exam') &&
       (isUnlocked || isSupervisor) &&
       !getBlockingPrevLesson(
         allLessons.findIndex((l) => l.id === activeLesson.id)
@@ -441,27 +471,19 @@ export function ClassroomView({
     }
   }, [course.id, activeLesson?.id, canEnterLesson, completedLessonIds, activeLesson]);
 
-  const getLessonAutoMinutes = (lesson: Lesson): number => {
-    const videos = lesson.videos ?? [];
-    if (videos.length > 0) {
-      const totalSec = videos.reduce(
-        (sum, v) => sum + (measuredVideoSeconds[v.id] ?? v.durationSeconds ?? 0),
-        0
-      );
-      if (totalSec > 0) return Math.max(1, Math.round(totalSec / 60));
-    }
-    return lesson.durationMinutes || 0;
-  };
+  const getLessonSeconds = (lesson: Lesson): number =>
+    getLessonEffectiveSeconds(lesson, measuredVideoSeconds);
 
-  const courseTotalMinutes = useMemo(() => {
-    const sumLessons = allLessons.reduce((sum, l) => sum + getLessonAutoMinutes(l), 0);
-    if (sumLessons > 0) return sumLessons;
-    return course.totalHours > 0 ? course.totalHours * 60 : 0;
+  const courseTotalSeconds = useMemo(
+    () => getCourseEffectiveSeconds(course, measuredVideoSeconds),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allLessons, course.totalHours, measuredVideoSeconds]);
+    [course, measuredVideoSeconds]
+  );
 
-  const activeLessonMinutes = activeLesson ? getLessonAutoMinutes(activeLesson) : 0;
-  const totalDurationSeconds = (activeLessonMinutes || 30) * 60;
+  const activeLessonSeconds = activeLesson ? getLessonSeconds(activeLesson) : 0;
+  const activeLessonMinutes =
+    activeLessonSeconds > 0 ? Math.max(1, Math.round(activeLessonSeconds / 60)) : 0;
+  const totalDurationSeconds = activeLessonSeconds > 0 ? activeLessonSeconds : 30 * 60;
 
   useEffect(() => {
     if (!isPlaying || !activeLesson || !canEnterLesson) return;
@@ -633,7 +655,7 @@ export function ClassroomView({
                   <span>المدة الإجمالية</span>
                 </div>
                 <span className="font-bold text-slate-900 dark:text-white tabular-nums">
-                  {formatMinutesArabic(courseTotalMinutes)}
+                  {formatArabicDurationFromSeconds(courseTotalSeconds)}
                 </span>
               </div>
 
@@ -716,7 +738,7 @@ export function ClassroomView({
               <Clock className="w-4 h-4" />
             </div>
             <div className="text-sm sm:text-base font-bold text-slate-900 dark:text-white tabular-nums">
-              {formatMinutesArabic(courseTotalMinutes)}
+              {formatArabicDurationFromSeconds(courseTotalSeconds)}
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">المدة الإجمالية</div>
           </div>
@@ -772,6 +794,8 @@ export function ClassroomView({
               const gateAlert =
                 overviewGateMessage?.lessonId === lesson.id ? overviewGateMessage : null;
 
+              const lessonSec = getLessonSeconds(lesson);
+
               return (
                 <div
                   key={lesson.id}
@@ -812,6 +836,12 @@ export function ClassroomView({
                           <span>{vidsCount} فيديو</span>
                           <span>·</span>
                           <span>{filesCount} ملفات</span>
+                          {lessonSec > 0 && (
+                            <>
+                              <span>·</span>
+                              <span>{formatArabicDurationFromSeconds(lessonSec)}</span>
+                            </>
+                          )}
                           {hasExam && (
                             <>
                               <span>·</span>
@@ -859,9 +889,9 @@ export function ClassroomView({
                         <span className="truncate">
                           {lesson.summary?.trim() || course.title}
                         </span>
-                        {getLessonAutoMinutes(lesson) > 0 && (
+                        {lessonSec > 0 && (
                           <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400 shrink-0">
-                            {formatMinutesArabic(getLessonAutoMinutes(lesson))}
+                            {formatArabicDurationFromSeconds(lessonSec)}
                           </span>
                         )}
                       </div>
@@ -984,7 +1014,7 @@ export function ClassroomView({
 
   const activeVideoSec = activeVideo
     ? measuredVideoSeconds[activeVideo.id] ?? activeVideo.durationSeconds ?? 0
-    : activeLessonMinutes * 60;
+    : activeLessonSeconds;
 
   // Overall lesson percentage combines video progress & exam completion
   const lessonOverallPercent = (() => {
@@ -1081,10 +1111,522 @@ export function ClassroomView({
     (_, qIdx) => draftAnswers[getExamAnswerKey(activeLesson.id, qIdx)] !== undefined
   ).length;
 
+  const openExamPage = (isRetake = false) => {
+    if (!hasExam) return;
+    setDraftAnswers({});
+    setShowPendingSubmitConfirm(false);
+    setShowPostSubmitReview(false);
+    setNextLessonBlockedNotice(null);
+    if (isRetake || !activeExamResult) {
+      setExamMode('taking');
+    } else {
+      setExamMode('submitted');
+    }
+    setStageMode('exam');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const examCircleCircumference = 2 * Math.PI * 26;
   const examCircleOffset = activeExamResult
     ? examCircleCircumference * (1 - activeExamResult.scorePercent / 100)
     : examCircleCircumference;
+
+  // =========================================================================
+  // VIEW 3: DEDICATED SEPARATE EXAM PAGE
+  // =========================================================================
+  if (stageMode === 'exam') {
+    const answeredPct =
+      realQuestions.length > 0
+        ? Math.round((draftAnsweredCount / realQuestions.length) * 100)
+        : 0;
+
+    return (
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-5 sm:py-8 space-y-6 overflow-x-hidden">
+        {/* Top Exam Page Header */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!activeExamResult) {
+                    setExamMode('intro');
+                  } else {
+                    setExamMode('submitted');
+                  }
+                  setShowPendingSubmitConfirm(false);
+                  setStageMode('lesson');
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-bold text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
+              >
+                <ArrowRight className="w-4 h-4" />
+                <span>العودة إلى الحصة</span>
+              </button>
+              <span className="text-slate-300 dark:text-slate-700">|</span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!activeExamResult) {
+                    setExamMode('intro');
+                  }
+                  setStageMode('overview');
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+              >
+                حصص الكورس
+              </button>
+            </div>
+
+            {examMode === 'taking' ? (
+              <span className="text-xs font-bold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 px-3 py-1 rounded-lg tabular-nums">
+                تم اختيار {draftAnsweredCount} من {realQuestions.length}
+              </span>
+            ) : activeExamResult ? (
+              <span
+                className={`text-xs font-bold px-3 py-1 rounded-lg tabular-nums ${
+                  activeExamResult.passed
+                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-amber-500/15 text-amber-800 dark:text-amber-300'
+                }`}
+              >
+                النتيجة: {activeExamResult.scorePercent}%
+              </span>
+            ) : null}
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-xs font-semibold text-purple-700 dark:text-purple-400">
+              <Award className="w-4 h-4" />
+              <span>صفحة الامتحان المستقلة</span>
+            </div>
+            <h1 className="text-lg sm:text-2xl font-bold text-slate-900 dark:text-white">
+              امتحان الحصة — {activeLesson.title}
+            </h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {course.title} · {resolvedInstructorName} · {realQuestions.length} سؤال
+            </p>
+          </div>
+
+          {examMode === 'taking' && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
+                <span>تقدم الحل</span>
+                <span>{answeredPct}%</span>
+              </div>
+              <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-600 dark:bg-blue-500 transition-all duration-200"
+                  style={{ width: `${answeredPct}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Exam Content */}
+        {!hasExam ? (
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 text-center space-y-4">
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              لا يوجد امتحان مضاف لهذه الحصة حاليًا.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setStageMode('lesson');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="px-5 py-2.5 text-xs font-bold text-white bg-blue-700 rounded-xl hover:bg-blue-800 cursor-pointer"
+            >
+              العودة إلى الحصة
+            </button>
+          </div>
+        ) : examMode === 'submitted' && activeExamResult ? (
+          <div className="space-y-5">
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-6 space-y-4 shadow-sm">
+              {/* Score Percentage & Status Banner */}
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
+                <div className="space-y-1.5">
+                  <span
+                    className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-bold ${
+                      activeExamResult.passed
+                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                        : 'bg-amber-500/15 text-amber-800 dark:text-amber-300'
+                    }`}
+                  >
+                    {activeExamResult.passed ? 'اجتياز بنجاح' : 'تم تسليم الامتحان'}
+                  </span>
+                  <div className="text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-200">
+                    {activeExamResult.passed
+                      ? 'لقد اجتزت الامتحان بنجاح وتستحق شهادة اجتياز الحصة!'
+                      : 'تم تصحيح الامتحان وتسجيل نتيجتك — يمكنك مراجعة الإجابات أو إعادة الامتحان.'}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="text-left">
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400">الدرجة النهائية</div>
+                    <div className="text-sm font-bold text-slate-900 dark:text-white tabular-nums">
+                      {activeExamResult.correctCount} / {activeExamResult.totalQuestions}
+                    </div>
+                  </div>
+
+                  <div className="relative w-16 h-16 flex items-center justify-center">
+                    <svg className="w-16 h-16 -rotate-90" viewBox="0 0 64 64">
+                      <circle
+                        cx="32"
+                        cy="32"
+                        r="26"
+                        stroke="currentColor"
+                        strokeWidth="6"
+                        fill="transparent"
+                        className="text-slate-200 dark:text-slate-800"
+                      />
+                      <circle
+                        cx="32"
+                        cy="32"
+                        r="26"
+                        stroke="currentColor"
+                        strokeWidth="6"
+                        strokeLinecap="round"
+                        fill="transparent"
+                        strokeDasharray={examCircleCircumference}
+                        strokeDashoffset={examCircleOffset}
+                        className={activeExamResult.passed ? 'text-emerald-500' : 'text-amber-500'}
+                      />
+                    </svg>
+                    <span className="absolute text-xs font-bold text-slate-900 dark:text-white tabular-nums">
+                      {activeExamResult.scorePercent}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="px-3.5 py-2 rounded-lg bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 flex items-center justify-center gap-2 text-xs text-slate-600 dark:text-slate-300 tabular-nums">
+                <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                <span>
+                  تاريخ التسليم:{' '}
+                  {new Date(activeExamResult.submittedAt).toLocaleString('ar-EG', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/70 text-center space-y-1">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 mx-auto" />
+                  <div className="text-lg font-bold text-emerald-700 dark:text-emerald-300 tabular-nums">
+                    {activeExamResult.correctCount}
+                  </div>
+                  <div className="text-xs font-medium text-emerald-700 dark:text-emerald-300">
+                    إجابات صحيحة
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/70 text-center space-y-1">
+                  <XCircle className="w-5 h-5 text-red-600 dark:text-red-400 mx-auto" />
+                  <div className="text-lg font-bold text-red-700 dark:text-red-300 tabular-nums">
+                    {activeExamResult.wrongCount}
+                  </div>
+                  <div className="text-xs font-medium text-red-700 dark:text-red-300">
+                    إجابات خاطئة
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowPostSubmitReview((r) => !r)}
+                  className="w-full py-2.5 px-4 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  {showPostSubmitReview ? 'إخفاء نتائج وتفاصيل الامتحان' : 'عرض نتائج وتفاصيل الامتحان'}
+                </button>
+
+                {activeExamResult.passed && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCertificateTarget({
+                        lessonId: activeLesson.id,
+                        lessonTitle: activeLesson.title,
+                        scorePercent: activeExamResult.scorePercent,
+                        submittedAt: activeExamResult.submittedAt,
+                      })
+                    }
+                    className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <Award className="w-4 h-4 shrink-0" />
+                    <span>استخراج شهادة اجتياز امتحان الحصة</span>
+                  </button>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStageMode('lesson');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <ArrowRight className="w-3.5 h-3.5" />
+                    <span>العودة إلى الحصة</span>
+                  </button>
+
+                  {nextLesson ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNextLessonBlockedNotice(null);
+                        setActiveLessonId(nextLesson.id);
+                        setStageMode('lesson');
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
+                      className="w-full py-2.5 px-4 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      <span>دخول الحصة التالية</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => openExamPage(true)}
+                      className="w-full py-2.5 px-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 text-xs font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>إعادة الامتحان</span>
+                    </button>
+                  )}
+                </div>
+
+                {nextLesson && (
+                  <button
+                    type="button"
+                    onClick={() => openExamPage(true)}
+                    className="w-full py-2.5 px-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 text-xs font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>إعادة الامتحان</span>
+                  </button>
+                )}
+              </div>
+
+              {showPostSubmitReview && (
+                <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-4">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                    <span>مراجعة الأسئلة والإجابات الصحيحة</span>
+                  </div>
+                  {realQuestions.map((q, qIdx) => {
+                    const ansKey = getExamAnswerKey(activeLesson.id, qIdx);
+                    const chosen = quizAnswers[ansKey];
+                    const isQCorrect = chosen === q.correctIndex;
+                    return (
+                      <div
+                        key={qIdx}
+                        className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/60 space-y-3"
+                      >
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span className="font-bold text-blue-700 dark:text-blue-400">
+                            السؤال {qIdx + 1}
+                          </span>
+                          <span
+                            className={`font-bold ${
+                              isQCorrect
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : 'text-red-600 dark:text-red-400'
+                            }`}
+                          >
+                            {isQCorrect ? 'إجابة صحيحة' : 'إجابة خاطئة'}
+                          </span>
+                        </div>
+                        {q.questionImage && (
+                          <img
+                            src={q.questionImage}
+                            alt={`السؤال ${qIdx + 1}`}
+                            className="w-full max-h-[380px] object-contain rounded-lg border border-slate-200 dark:border-slate-700 bg-white"
+                          />
+                        )}
+                        {q.question && q.question.trim().length > 0 && (
+                          <div className="text-sm font-bold text-slate-900 dark:text-white">
+                            {q.question}
+                          </div>
+                        )}
+                        <div className="space-y-1.5">
+                          {q.options.map((opt, oIdx) => {
+                            const isOptCorrect = oIdx === q.correctIndex;
+                            const isOptChosen = oIdx === chosen;
+                            return (
+                              <div
+                                key={oIdx}
+                                className={`px-3 py-2 rounded-lg border text-xs sm:text-sm flex items-center justify-between gap-2 ${
+                                  isOptCorrect
+                                    ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-900 dark:text-emerald-200 font-semibold'
+                                    : isOptChosen
+                                      ? 'border-red-400 bg-red-50 dark:bg-red-950/60 text-red-900 dark:text-red-200'
+                                      : 'border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
+                                }`}
+                              >
+                                <span>{opt}</span>
+                                {isOptCorrect && (
+                                  <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 shrink-0">
+                                    الإجابة الصحيحة
+                                  </span>
+                                )}
+                                {!isOptCorrect && isOptChosen && (
+                                  <span className="text-[11px] font-bold text-red-700 dark:text-red-300 shrink-0">
+                                    إجابتك
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {q.explanation && q.explanation.trim().length > 0 && (
+                          <div className="text-xs text-slate-600 dark:text-slate-400 bg-white dark:bg-slate-900 p-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
+                            <strong className="text-slate-800 dark:text-slate-200">التوضيح: </strong>
+                            {q.explanation}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          /* ---- DEDICATED EXAM TAKING QUESTIONS (ZERO RIGHT/WRONG REVEAL!) ---- */
+          <div className="space-y-5">
+            {realQuestions.map((q, qIdx) => {
+              const ansKey = getExamAnswerKey(activeLesson.id, qIdx);
+              const chosenOpt = draftAnswers[ansKey];
+
+              return (
+                <div
+                  key={qIdx}
+                  className="p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3.5 shadow-xs"
+                >
+                  <div className="space-y-2.5">
+                    <div className="text-xs font-semibold text-blue-700 dark:text-blue-400 tabular-nums">
+                      السؤال {qIdx + 1} من {realQuestions.length}
+                    </div>
+                    {q.questionImage && (
+                      <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white overflow-hidden">
+                        <img
+                          src={q.questionImage}
+                          alt={`صورة السؤال ${qIdx + 1}`}
+                          className="w-full max-h-[520px] object-contain mx-auto"
+                        />
+                      </div>
+                    )}
+                    {q.question && q.question.trim().length > 0 && (
+                      <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white leading-relaxed">
+                        {q.question}
+                      </h2>
+                    )}
+                  </div>
+
+                  {/* Options WITHOUT any correct/wrong hints */}
+                  <div className="space-y-2">
+                    {q.options.map((opt, idx) => {
+                      const isChosen = chosenOpt === idx;
+                      return (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => handleSelectExamDraftOption(qIdx, idx)}
+                          className={`w-full text-right p-3.5 rounded-xl border text-sm font-medium transition-colors flex items-center justify-between gap-3 cursor-pointer ${
+                            isChosen
+                              ? 'border-blue-600 dark:border-blue-500 bg-blue-50 dark:bg-blue-950/60 text-blue-950 dark:text-blue-100'
+                              : 'border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/60 text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800'
+                          }`}
+                        >
+                          <span className="min-w-0 break-words">{opt}</span>
+                          {isChosen ? (
+                            <CheckCircle2 className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                          ) : (
+                            <Circle className="w-4 h-4 text-slate-300 dark:text-slate-600 shrink-0" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+
+            {showPendingSubmitConfirm && (
+              <div className="p-4 rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/60 text-xs sm:text-sm text-amber-950 dark:text-amber-100 space-y-2.5">
+                <p className="font-semibold">
+                  لم تقم بالإجابة على جميع الأسئلة بعد (متبقي{' '}
+                  {realQuestions.length - draftAnsweredCount} سؤال). هل تريد تسليم الامتحان الآن؟
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={finalizeSubmitExam}
+                    className="px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg cursor-pointer"
+                  >
+                    تأكيد تسليم الامتحان الآن
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowPendingSubmitConfirm(false)}
+                    className="px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg cursor-pointer"
+                  >
+                    متابعة حل الأسئلة
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row gap-3 pt-1">
+              <button
+                type="button"
+                onClick={handleClickSubmitExam}
+                className="flex-1 py-3.5 px-6 text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-colors cursor-pointer"
+              >
+                تسليم الامتحان
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setExamMode(activeExamResult ? 'submitted' : 'intro');
+                  setShowPendingSubmitConfirm(false);
+                  setStageMode('lesson');
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="px-5 py-3.5 text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                العودة إلى الحصة
+              </button>
+            </div>
+          </div>
+        )}
+
+        {certificateTarget && (
+          <CertificateModal
+            course={course}
+            lessonId={certificateTarget.lessonId}
+            lessonTitle={certificateTarget.lessonTitle}
+            examScorePercent={certificateTarget.scorePercent}
+            submittedAt={certificateTarget.submittedAt}
+            studentName={studentName}
+            instructorName={resolvedInstructorName}
+            onUpdateStudentName={onUpdateStudentName}
+            onClose={() => setCertificateTarget(null)}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-5 sm:py-8 space-y-5 overflow-x-hidden">
@@ -1119,6 +1661,15 @@ export function ClassroomView({
             <span>{course.title}</span>
             <span>·</span>
             <span>{resolvedInstructorName}</span>
+            {activeLessonSeconds > 0 && (
+              <>
+                <span>·</span>
+                <span className="inline-flex items-center gap-1 font-semibold text-blue-700 dark:text-blue-400 tabular-nums">
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>مدة الحصة: {formatArabicDurationFromSeconds(activeLessonSeconds)}</span>
+                </span>
+              </>
+            )}
           </div>
         </div>
 
@@ -1162,10 +1713,22 @@ export function ClassroomView({
       {nextLessonBlockedNotice && (
         <div
           role="alert"
-          className="p-3.5 rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/60 text-xs sm:text-sm font-semibold text-amber-900 dark:text-amber-100 flex items-center gap-2.5"
+          className="p-3.5 rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/60 text-xs sm:text-sm font-semibold text-amber-900 dark:text-amber-100 flex flex-wrap items-center justify-between gap-2.5"
         >
-          <Lock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
-          <span>{nextLessonBlockedNotice}</span>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <Lock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>{nextLessonBlockedNotice}</span>
+          </div>
+          {hasExam && (
+            <button
+              type="button"
+              onClick={() => openExamPage(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer shrink-0"
+            >
+              <Play className="w-3.5 h-3.5" />
+              <span>فتح صفحة الامتحان الآن</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -1188,9 +1751,15 @@ export function ClassroomView({
 
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-3.5 flex items-center justify-between gap-2">
           <div className="space-y-0.5 min-w-0">
-            <div className="text-[11px] text-slate-500 dark:text-slate-400">مدة الفيديو</div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+              {lessonVideos.length > 0 ? 'مدة الفيديو' : 'مدة الحصة'}
+            </div>
             <div className="text-sm font-bold text-slate-900 dark:text-white tabular-nums truncate">
-              {activeVideoSec > 0 ? formatSecondsDigital(activeVideoSec) : formatMinutesArabic(activeLessonMinutes)}
+              {lessonVideos.length > 0
+                ? activeVideoSec > 0
+                  ? formatSecondsDigital(activeVideoSec)
+                  : 'غير محدد'
+                : formatArabicDurationFromSeconds(activeLessonSeconds)}
             </div>
           </div>
           <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
@@ -1358,8 +1927,10 @@ export function ClassroomView({
               <span>
                 {course.grade} · {course.category}
               </span>
-              {activeLessonMinutes > 0 && (
-                <span className="font-mono tabular-nums">{activeLessonMinutes} دقيقة</span>
+              {activeLessonSeconds > 0 && (
+                <span className="font-mono tabular-nums">
+                  {formatArabicDurationFromSeconds(activeLessonSeconds)}
+                </span>
               )}
             </div>
             <div className="my-4">
@@ -1618,7 +2189,7 @@ export function ClassroomView({
                             </div>
                             <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
                               {durSec > 0 && (
-                                <span>{formatMinutesArabic(Math.max(1, Math.round(durSec / 60)))}</span>
+                                <span>{formatArabicDurationFromSeconds(durSec)}</span>
                               )}
                               {isSelected && (
                                 <span className="px-2 py-0.5 rounded bg-blue-600/15 text-blue-700 dark:text-blue-300 font-semibold">
@@ -1809,8 +2380,8 @@ export function ClassroomView({
                 <p className="text-xs text-slate-500 dark:text-slate-400 text-center py-4">
                   لا يوجد امتحان مضاف لهذه الحصة حاليًا.
                 </p>
-              ) : examMode === 'intro' ? (
-                /* ---- EXAM INTRO STATE (Requires clicking "بدء الامتحان") ---- */
+              ) : !activeExamResult ? (
+                /* ---- EXAM INTRO CARD (Clicking "بدء الامتحان" opens the separate Exam Page!) ---- */
                 <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-5 sm:p-6 space-y-4">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-3">
@@ -1829,129 +2400,19 @@ export function ClassroomView({
                   </div>
 
                   <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-                    لن تظهر الإجابات الصحيحة أو الخاطئة أثناء الحل. بعد الانتهاء اضغط على «تسليم الامتحان» لتصحيح الإجابات وظهور نتيجتك النهائية وإتاحة الحصة التالية. عند النجاح (٥٠٪ فأكثر) تصدر شهادة اجتياز الحصة.
+                    عند الضغط على «بدء الامتحان» ستنتقل إلى صفحة الامتحان المستقلة لحل الأسئلة. لن تظهر الإجابات الصحيحة أو الخاطئة أثناء الحل، وعند التسليم تظهر نتيجتك النهائية وتُفتح الحصة التالية.
                   </p>
 
                   <button
                     type="button"
-                    onClick={() => {
-                      setDraftAnswers({});
-                      setShowPendingSubmitConfirm(false);
-                      setShowPostSubmitReview(false);
-                      setExamMode('taking');
-                    }}
+                    onClick={() => openExamPage(true)}
                     className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-bold text-white bg-blue-700 hover:bg-blue-800 rounded-xl transition-colors cursor-pointer"
                   >
                     <Play className="w-4 h-4" />
                     <span>بدء الامتحان</span>
                   </button>
                 </div>
-              ) : examMode === 'taking' ? (
-                /* ---- EXAM TAKING STATE (ZERO RIGHT/WRONG REVEAL!) ---- */
-                <div className="space-y-5">
-                  <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
-                    <div className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
-                      امتحان الحصة ({realQuestions.length} سؤال)
-                    </div>
-                    <div className="text-xs font-semibold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 px-3 py-1 rounded-lg tabular-nums">
-                      تم اختيار {draftAnsweredCount} من {realQuestions.length}
-                    </div>
-                  </div>
-
-                  <div className="space-y-5">
-                    {realQuestions.map((q, qIdx) => {
-                      const ansKey = getExamAnswerKey(activeLesson.id, qIdx);
-                      const chosenOpt = draftAnswers[ansKey];
-
-                      return (
-                        <div
-                          key={qIdx}
-                          className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/60 space-y-3"
-                        >
-                          <div className="space-y-2.5">
-                            <div className="text-xs font-semibold text-blue-700 dark:text-blue-400 tabular-nums">
-                              السؤال {qIdx + 1} من {realQuestions.length}
-                            </div>
-                            {q.questionImage && (
-                              <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white overflow-hidden">
-                                <img
-                                  src={q.questionImage}
-                                  alt={`صورة السؤال ${qIdx + 1}`}
-                                  className="w-full max-h-[440px] object-contain mx-auto"
-                                />
-                              </div>
-                            )}
-                            {q.question && q.question.trim().length > 0 && (
-                              <h4 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
-                                {q.question}
-                              </h4>
-                            )}
-                          </div>
-
-                          {/* Options WITHOUT any correct/wrong hints */}
-                          <div className="space-y-2">
-                            {q.options.map((opt, idx) => {
-                              const isChosen = chosenOpt === idx;
-                              return (
-                                <button
-                                  key={idx}
-                                  type="button"
-                                  onClick={() => handleSelectExamDraftOption(qIdx, idx)}
-                                  className={`w-full text-right p-3.5 rounded-lg border text-sm font-medium transition-colors flex items-center justify-between gap-3 cursor-pointer ${
-                                    isChosen
-                                      ? 'border-blue-600 dark:border-blue-500 bg-blue-50 dark:bg-blue-950/60 text-blue-950 dark:text-blue-100'
-                                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800'
-                                  }`}
-                                >
-                                  <span className="min-w-0 break-words">{opt}</span>
-                                  {isChosen ? (
-                                    <CheckCircle2 className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
-                                  ) : (
-                                    <Circle className="w-4 h-4 text-slate-300 dark:text-slate-600 shrink-0" />
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {showPendingSubmitConfirm && (
-                    <div className="p-3.5 rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/60 text-xs sm:text-sm text-amber-950 dark:text-amber-100 space-y-2.5">
-                      <p className="font-semibold">
-                        لم تقم بالإجابة على جميع الأسئلة بعد (متبقي{' '}
-                        {realQuestions.length - draftAnsweredCount} سؤال). هل تريد تسليم الامتحان الآن؟
-                      </p>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={finalizeSubmitExam}
-                          className="px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg cursor-pointer"
-                        >
-                          تأكيد تسليم الامتحان الآن
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setShowPendingSubmitConfirm(false)}
-                          className="px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg cursor-pointer"
-                        >
-                          متابعة حل الأسئلة
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={handleClickSubmitExam}
-                    className="w-full py-3 px-6 text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-colors cursor-pointer"
-                  >
-                    تسليم الامتحان
-                  </button>
-                </div>
-              ) : activeExamResult ? (
+              ) : (
                 /* ---- EXAM SUBMITTED / GRADED SUMMARY (Screenshot 3) ---- */
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/70 p-4 sm:p-5 space-y-4">
                   <div className="flex items-center justify-between gap-3">
@@ -2100,12 +2561,7 @@ export function ClassroomView({
 
                     <button
                       type="button"
-                      onClick={() => {
-                        setDraftAnswers({});
-                        setShowPendingSubmitConfirm(false);
-                        setShowPostSubmitReview(false);
-                        setExamMode('taking');
-                      }}
+                      onClick={() => openExamPage(true)}
                       className="w-full py-2.5 px-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/70 dark:bg-blue-950/40 text-xs font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
@@ -2197,7 +2653,7 @@ export function ClassroomView({
                     </div>
                   )}
                 </div>
-              ) : null}
+              )}
             </div>
           )}
         </div>
