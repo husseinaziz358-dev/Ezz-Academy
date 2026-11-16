@@ -12,6 +12,7 @@ interface ProgressDashboardProps {
   studentName: string;
   studentGrade: string;
   studentSpecialization?: string;
+  courses?: Course[];
   unlockedCourseIds: string[];
   onUpdateStudentName: (name: string) => void;
   completedLessonIds: string[];
@@ -25,6 +26,7 @@ export function ProgressDashboard({
   studentName,
   studentGrade,
   studentSpecialization,
+  courses,
   unlockedCourseIds,
   onUpdateStudentName,
   completedLessonIds,
@@ -34,14 +36,17 @@ export function ProgressDashboard({
   onLogout,
 }: ProgressDashboardProps) {
   const [certCourse, setCertCourse] = useState<Course | null>(null);
+  const allCatalogCourses = courses && courses.length > 0 ? courses : COURSES;
+  const stageCourses = allCatalogCourses.filter((c) => c.grade === studentGrade);
+  const visibleCourses = stageCourses.length > 0 ? stageCourses : allCatalogCourses;
 
-  const totalLessonsAcrossAcademy = COURSES.reduce(
+  const totalLessonsAcrossAcademy = visibleCourses.reduce(
     (sum, c) => sum + getCourseAllLessons(c).length,
     0
   );
 
   const allLessonsMap = new Map(
-    COURSES.flatMap((c) =>
+    allCatalogCourses.flatMap((c) =>
       getCourseAllLessons(c).map((l) => [l.id, { lesson: l, course: c }])
     )
   );
@@ -56,7 +61,7 @@ export function ProgressDashboard({
     ([, text]) => text.trim().length > 0
   );
 
-  const completedCourses = COURSES.filter((course) => {
+  const completedCourses = visibleCourses.filter((course) => {
     const lessons = getCourseAllLessons(course);
     return lessons.length > 0 && lessons.every((l) => completedLessonIds.includes(l.id));
   });
@@ -129,9 +134,10 @@ export function ProgressDashboard({
         </div>
 
         <div className="bg-white rounded-xl border border-slate-200 p-5">
-          <div className="text-xs text-slate-500 mb-2">الكورسات المفعلة</div>
+          <div className="text-xs text-slate-500 mb-2">الكورسات المفعلة ({studentGrade})</div>
           <div className="text-2xl font-bold text-slate-900 tabular-nums">
-            {unlockedCourseIds.length} / {COURSES.length}
+            {unlockedCourseIds.filter((id) => visibleCourses.some((c) => c.id === id)).length} /{' '}
+            {visibleCourses.length}
           </div>
           <div className="text-xs text-slate-500 mt-1">
             {completedCourses.length} كورس مكتمل بالكامل
@@ -148,9 +154,11 @@ export function ProgressDashboard({
       </div>
 
       <section className="space-y-4">
-        <h2 className="text-lg font-bold text-slate-900">حالة الكورسات والاشتراكات</h2>
+        <h2 className="text-lg font-bold text-slate-900">
+          كورسات {studentGrade}
+        </h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {COURSES.map((course) => {
+          {visibleCourses.map((course) => {
             const lessons = getCourseAllLessons(course);
             const doneCount = lessons.filter((l) => completedLessonIds.includes(l.id)).length;
             const pct = Math.round((doneCount / lessons.length) * 100);

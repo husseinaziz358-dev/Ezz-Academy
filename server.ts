@@ -12,6 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'students-db.json');
+const CATALOG_FILE = path.join(DATA_DIR, 'academy-db.json');
 
 const PORT = Number(process.env.PORT) || 3000;
 const TOKEN_SECRET =
@@ -145,6 +146,73 @@ async function saveDb(students: StudentRecord[]): Promise<void> {
   await fs.writeFile(DB_FILE, JSON.stringify(students, null, 2), 'utf-8');
 }
 
+interface DynamicTeacherRecord {
+  id: string;
+  name: string;
+  subject: string;
+  grades: string[];
+  image: string;
+  createdAt: string;
+}
+
+interface CustomCourseRecord {
+  id: string;
+  title: string;
+  subtitle: string;
+  grade: string;
+  category: string;
+  studyMode: 'أونلاين' | 'سنتر وأونلاين';
+  priceEgp: number;
+  totalHours: number;
+  instructorId: string;
+  image: string;
+  fallbackTitle: string;
+  modules: {
+    id: string;
+    title: string;
+    lessons: {
+      id: string;
+      title: string;
+      durationMinutes: number;
+      summary: string;
+      keyTakeaways: string[];
+      simulationKind: 'math-calculus' | 'neural-convergence' | 'web-architecture';
+      quiz: {
+        question: string;
+        options: string[];
+        correctIndex: number;
+        explanation: string;
+      };
+    }[];
+  }[];
+}
+
+interface AcademyCatalogDb {
+  teachers: DynamicTeacherRecord[];
+  customCourses: CustomCourseRecord[];
+}
+
+async function ensureCatalogDb(): Promise<AcademyCatalogDb> {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  try {
+    const raw = await fs.readFile(CATALOG_FILE, 'utf-8');
+    const parsed = JSON.parse(raw) as Partial<AcademyCatalogDb>;
+    return {
+      teachers: Array.isArray(parsed.teachers) ? parsed.teachers : [],
+      customCourses: Array.isArray(parsed.customCourses) ? parsed.customCourses : [],
+    };
+  } catch {
+    const empty: AcademyCatalogDb = { teachers: [], customCourses: [] };
+    await fs.writeFile(CATALOG_FILE, JSON.stringify(empty, null, 2), 'utf-8');
+    return empty;
+  }
+}
+
+async function saveCatalogDb(catalog: AcademyCatalogDb): Promise<void> {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  await fs.writeFile(CATALOG_FILE, JSON.stringify(catalog, null, 2), 'utf-8');
+}
+
 function signToken(payload: { role: 'supervisor' | 'student'; sub: string }): string {
   const body = Buffer.from(
     JSON.stringify({ ...payload, iat: Date.now() }),
@@ -213,8 +281,9 @@ function requireSupervisor(req: Request, res: Response, next: NextFunction) {
 
 async function startServer() {
   await ensureDb();
+  await ensureCatalogDb();
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '5mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ ok: true });
@@ -480,6 +549,161 @@ async function startServer() {
       res.status(500).json({ error: 'تعذر الاستعلام عن بيانات الطالب.' });
     }
   });
+
+  // Public catalog of admin-added teachers and custom courses
+  app.get('/api/academy/catalog', async (_req: Request, res: Response) => {
+    try {
+      const catalog = await ensureCatalogDb();
+      res.json(catalog);
+    } catch (err) {
+      console.error('Catalog read error:', err);
+      res.status(500).json({ error: 'تعذر تحميل بيانات المدرسين والكورسات.' });
+    }
+  });
+
+  // Admin: add a teacher with photo, name, subject, and grades
+  app.post('/api/supervisor/teachers', requireSupervisor, async (req: Request, res: Response) => {
+    try {
+      const name = String(req.body?.name ?? '').trim();
+      const subject = String(req.body?.subject ?? '').trim();
+      const image = String(req.body?.image ?? '').trim();
+      const grades = Array.isArray(req.body?.grades)
+        ? req.body.grades.map((g: unknown) => String(g).trim()).filter(Boolean)
+        : [];
+
+      if (!name || !subject) {
+        res.status(400).json({ error: 'يرجى إدخال اسم المدرس والمادة التي يدرسها.' });
+        return;
+      }
+
+      const catalog = await ensureCatalogDb();
+      const teacher: DynamicTeacherRecord = {
+        id: `teacher-${Date.now()}`,
+        name,
+        subject,
+        grades: grades.length > 0 ? grades : ['الصف الثالث الثانوي'],
+        image: image || '/src/assets/images/hero_academy_studio_1794779037349.jpg',
+        createdAt: new Date().toISOString(),
+      };
+      catalog.teachers.push(teacher);
+      await saveCatalogDb(catalog);
+      res.status(201).json({ teacher });
+    } catch (err) {
+      console.error('Add teacher error:', err);
+      res.status(500).json({ error: 'تعذر إضافة المدرس.' });
+    }
+  });
+
+  app.delete(
+    '/api/supervisor/teachers/:id',
+    requireSupervisor,
+    async (req: Request, res: Response) => {
+      try {
+        const catalog = await ensureCatalogDb();
+        catalog.teachers = catalog.teachers.filter((t) => t.id !== req.params.id);
+        await saveCatalogDb(catalog);
+        res.json({ ok: true });
+      } catch (err) {
+        console.error('Delete teacher error:', err);
+        res.status(500).json({ error: 'تعذر حذف المدرس.' });
+      }
+    }
+  );
+
+  // Admin: add a course linked to a teacher and a single educational stage/year
+  app.post('/api/supervisor/courses', requireSupervisor, async (req: Request, res: Response) => {
+    try {
+      const title = String(req.body?.title ?? '').trim();
+      const subtitle = String(req.body?.subtitle ?? '').trim();
+      const grade = String(req.body?.grade ?? '').trim();
+      const category = String(req.body?.category ?? '').trim() || 'محتوى المنهج';
+      const instructorId = String(req.body?.instructorId ?? '').trim();
+      const studyMode = req.body?.studyMode === 'أونلاين' ? 'أونلاين' : 'سنتر وأونلاين';
+      const priceEgp = Number(req.body?.priceEgp) || 250;
+      const image = String(req.body?.image ?? '').trim();
+      const lessonTitles: string[] = Array.isArray(req.body?.lessonTitles)
+        ? req.body.lessonTitles.map((l: unknown) => String(l).trim()).filter(Boolean)
+        : [];
+
+      if (!title || !grade || !instructorId) {
+        res.status(400).json({ error: 'يرجى إدخال اسم الكورس واختيار المرحلة الدراسية والمدرس.' });
+        return;
+      }
+
+      const courseId = `course-custom-${Date.now()}`;
+      const lessonsList =
+        lessonTitles.length > 0
+          ? lessonTitles
+          : ['الحصة الأولى: شرح الأساسيات والتطبيقات'];
+
+      const newCourse: CustomCourseRecord = {
+        id: courseId,
+        title,
+        subtitle: subtitle || `شرح وتطبيقات ${title} لطلاب ${grade}.`,
+        grade,
+        category,
+        studyMode,
+        priceEgp,
+        totalHours: Math.max(4, lessonsList.length * 2),
+        instructorId,
+        image: image || '/src/assets/images/course_math_calculus_1794779284413.jpg',
+        fallbackTitle: title,
+        modules: [
+          {
+            id: `mod-${Date.now()}`,
+            title: 'محتوى الكورس والحصص',
+            lessons: lessonsList.map((lesTitle, idx) => ({
+              id: `les-${Date.now()}-${idx + 1}`,
+              title: lesTitle,
+              durationMinutes: 45,
+              summary: `شرح تفصيلي لدرس «${lesTitle}» مع أمثلة محلولة وتدريبات شاملة لطلاب ${grade}.`,
+              keyTakeaways: [
+                'فهم القوانين الأساسية والتعريفات المرتبطة بالدرس.',
+                'حل مسائل متدرجة المستوى وفق مواصفات الامتحان.',
+                'مراجعة أبرز نقاط الفهم الشائعة قبل الاختبار.',
+              ],
+              simulationKind: 'math-calculus',
+              quiz: {
+                question: `اختبار سريع على: ${lesTitle}`,
+                options: [
+                  'مراجعة المفهوم الأساسي وتطبيق القانون المباشر',
+                  'إهمال شروط التعريف في المسألة',
+                  'الاعتماد على خطوات غير مكتملة',
+                  'لا شيء مما سبق',
+                ],
+                correctIndex: 0,
+                explanation: 'الخطوة الصحيحة دائمًا تبدأ بتحقيق شروط القانون الأساسي ثم التعويض الدقيق.',
+              },
+            })),
+          },
+        ],
+      };
+
+      const catalog = await ensureCatalogDb();
+      catalog.customCourses.unshift(newCourse);
+      await saveCatalogDb(catalog);
+      res.status(201).json({ course: newCourse });
+    } catch (err) {
+      console.error('Add course error:', err);
+      res.status(500).json({ error: 'تعذر إضافة الكورس.' });
+    }
+  });
+
+  app.delete(
+    '/api/supervisor/courses/:id',
+    requireSupervisor,
+    async (req: Request, res: Response) => {
+      try {
+        const catalog = await ensureCatalogDb();
+        catalog.customCourses = catalog.customCourses.filter((c) => c.id !== req.params.id);
+        await saveCatalogDb(catalog);
+        res.json({ ok: true });
+      } catch (err) {
+        console.error('Delete course error:', err);
+        res.status(500).json({ error: 'تعذر حذف الكورس.' });
+      }
+    }
+  );
 
   // Ensure unmatched /api/* routes always return JSON
   app.use('/api', (_req: Request, res: Response) => {

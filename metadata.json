@@ -1,6 +1,6 @@
 {
   "name": "Ezz Academy",
-  "description": "منصة Ezz Academy التعليمية — شرح ومراجعات المرحلة الثانوية والبكالوريا، نخبة المدرسين، وبوابة متابعة ولي الأمر.",
+  "description": "منصة Ezz Academy التعليمية — شرح ومراجعات المرحلة الثانوية والبكالوريا وحصص تفاعلية متكاملة.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

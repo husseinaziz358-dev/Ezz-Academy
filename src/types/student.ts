@@ -46,3 +46,13 @@ export const BACCALAUREATE_TRACKS: string[] = [
   'مسار الأعمال',
   'مسار الآداب والفنون',
 ];
+
+export interface DynamicTeacher {
+  id: string;
+  name: string;
+  subject: string;
+  grades: EducationalStage[];
+  image: string;
+  createdAt: string;
+}
+

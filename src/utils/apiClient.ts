@@ -1,6 +1,8 @@
-import { StudentRecord } from '../types/student';
+import { DynamicTeacher, EducationalStage, StudentRecord } from '../types/student';
+import { Course } from '../data/academyData';
 
 const FALLBACK_DB_KEY = 'ezz_academy_students_fallback_v1';
+const FALLBACK_CATALOG_KEY = 'ezz_academy_catalog_v1';
 
 // SHA-256 hex of 'Husse123##' so no plaintext password is stored in client code
 const SUPERVISOR_PHONE = '01022193514';
@@ -507,4 +509,206 @@ export async function apiLookupParent(phoneInput: string): Promise<
   }
   const { passwordHash: _ignored, ...safeStudent } = found;
   return { ok: true, student: safeStudent };
+}
+
+interface LocalCatalog {
+  teachers: DynamicTeacher[];
+  customCourses: Course[];
+}
+
+function getLocalCatalog(): LocalCatalog {
+  try {
+    const raw = window.localStorage.getItem(FALLBACK_CATALOG_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<LocalCatalog>;
+      return {
+        teachers: Array.isArray(parsed.teachers) ? parsed.teachers : [],
+        customCourses: Array.isArray(parsed.customCourses) ? parsed.customCourses : [],
+      };
+    }
+  } catch {
+    // Ignore storage read error
+  }
+  return { teachers: [], customCourses: [] };
+}
+
+function saveLocalCatalog(catalog: LocalCatalog) {
+  try {
+    window.localStorage.setItem(FALLBACK_CATALOG_KEY, JSON.stringify(catalog));
+  } catch {
+    // Ignore storage write error
+  }
+}
+
+export async function apiFetchAcademyCatalog(): Promise<LocalCatalog> {
+  const serverRes = await tryServerJson<LocalCatalog>('/api/academy/catalog');
+  if (serverRes && serverRes.ok) {
+    return {
+      teachers: Array.isArray(serverRes.data.teachers) ? serverRes.data.teachers : [],
+      customCourses: Array.isArray(serverRes.data.customCourses)
+        ? serverRes.data.customCourses
+        : [],
+    };
+  }
+  return getLocalCatalog();
+}
+
+export async function apiAddTeacher(
+  token: string,
+  payload: {
+    name: string;
+    subject: string;
+    grades: EducationalStage[];
+    image: string;
+  }
+): Promise<{ ok: true; teacher: DynamicTeacher } | { ok: false; error: string }> {
+  const serverRes = await tryServerJson<{ teacher?: DynamicTeacher; error?: string }>(
+    '/api/supervisor/teachers',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (serverRes) {
+    if (!serverRes.ok || !serverRes.data.teacher) {
+      return { ok: false, error: serverRes.data.error || 'تعذر إضافة المدرس.' };
+    }
+    return { ok: true, teacher: serverRes.data.teacher };
+  }
+
+  const catalog = getLocalCatalog();
+  const teacher: DynamicTeacher = {
+    id: `teacher-${Date.now()}`,
+    name: payload.name.trim(),
+    subject: payload.subject.trim(),
+    grades: payload.grades.length > 0 ? payload.grades : ['الصف الثالث الثانوي'],
+    image: payload.image || '/src/assets/images/hero_academy_studio_1794779037349.jpg',
+    createdAt: new Date().toISOString(),
+  };
+  catalog.teachers.push(teacher);
+  saveLocalCatalog(catalog);
+  return { ok: true, teacher };
+}
+
+export async function apiDeleteTeacher(token: string, teacherId: string): Promise<boolean> {
+  const serverRes = await tryServerJson<{ ok?: boolean }>(
+    `/api/supervisor/teachers/${teacherId}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+  if (serverRes) return serverRes.ok;
+
+  const catalog = getLocalCatalog();
+  catalog.teachers = catalog.teachers.filter((t) => t.id !== teacherId);
+  saveLocalCatalog(catalog);
+  return true;
+}
+
+export async function apiAddCourse(
+  token: string,
+  payload: {
+    title: string;
+    subtitle: string;
+    grade: EducationalStage;
+    category: string;
+    instructorId: string;
+    studyMode: 'أونلاين' | 'سنتر وأونلاين';
+    priceEgp: number;
+    image: string;
+    lessonTitles: string[];
+  }
+): Promise<{ ok: true; course: Course } | { ok: false; error: string }> {
+  const serverRes = await tryServerJson<{ course?: Course; error?: string }>(
+    '/api/supervisor/courses',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (serverRes) {
+    if (!serverRes.ok || !serverRes.data.course) {
+      return { ok: false, error: serverRes.data.error || 'تعذر إضافة الكورس.' };
+    }
+    return { ok: true, course: serverRes.data.course };
+  }
+
+  const lessonsList =
+    payload.lessonTitles.length > 0
+      ? payload.lessonTitles
+      : ['الحصة الأولى: شرح الأساسيات والتطبيقات'];
+
+  const course: Course = {
+    id: `course-custom-${Date.now()}`,
+    title: payload.title.trim(),
+    subtitle:
+      payload.subtitle.trim() || `شرح وتطبيقات ${payload.title.trim()} لطلاب ${payload.grade}.`,
+    grade: payload.grade,
+    category: payload.category.trim() || 'محتوى المنهج',
+    studyMode: payload.studyMode,
+    priceEgp: payload.priceEgp || 250,
+    totalHours: Math.max(4, lessonsList.length * 2),
+    instructorId: payload.instructorId,
+    image: payload.image || '/src/assets/images/course_math_calculus_1794779284413.jpg',
+    fallbackTitle: payload.title.trim(),
+    modules: [
+      {
+        id: `mod-${Date.now()}`,
+        title: 'محتوى الكورس والحصص',
+        lessons: lessonsList.map((lesTitle, idx) => ({
+          id: `les-${Date.now()}-${idx + 1}`,
+          title: lesTitle,
+          durationMinutes: 45,
+          summary: `شرح تفصيلي لدرس «${lesTitle}» مع أمثلة محلولة وتدريبات شاملة لطلاب ${payload.grade}.`,
+          keyTakeaways: [
+            'فهم القوانين الأساسية والتعريفات المرتبطة بالدرس.',
+            'حل مسائل متدرجة المستوى وفق مواصفات الامتحان.',
+            'مراجعة أبرز نقاط الفهم الشائعة قبل الاختبار.',
+          ],
+          simulationKind: 'math-calculus',
+          quiz: {
+            question: `اختبار سريع على: ${lesTitle}`,
+            options: [
+              'مراجعة المفهوم الأساسي وتطبيق القانون المباشر',
+              'إهمال شروط التعريف في المسألة',
+              'الاعتماد على خطوات غير مكتملة',
+              'لا شيء مما سبق',
+            ],
+            correctIndex: 0,
+            explanation: 'الخطوة الصحيحة دائمًا تبدأ بتحقيق شروط القانون الأساسي ثم التعويض الدقيق.',
+          },
+        })),
+      },
+    ],
+  };
+
+  const catalog = getLocalCatalog();
+  catalog.customCourses.unshift(course);
+  saveLocalCatalog(catalog);
+  return { ok: true, course };
+}
+
+export async function apiDeleteCourse(token: string, courseId: string): Promise<boolean> {
+  const serverRes = await tryServerJson<{ ok?: boolean }>(
+    `/api/supervisor/courses/${courseId}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+  if (serverRes) return serverRes.ok;
+
+  const catalog = getLocalCatalog();
+  catalog.customCourses = catalog.customCourses.filter((c) => c.id !== courseId);
+  saveLocalCatalog(catalog);
+  return true;
 }

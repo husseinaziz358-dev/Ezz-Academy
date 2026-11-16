@@ -78,7 +78,7 @@ export function CertificateModal({
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-6 border-t border-slate-300 text-xs text-slate-600">
             <div>
-              <div className="text-slate-400 mb-1">المحاضر المشرف</div>
+              <div className="text-slate-400 mb-1">مدرس المادة</div>
               <div className="font-semibold text-slate-900">{instructor.name}</div>
             </div>
             <div>
