@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Clock,
   Edit3,
   FilePlus2,
   FileText,
@@ -32,7 +33,9 @@ import {
   Tablet,
   Trash2,
   Upload,
+  UserCheck,
   Users,
+  UserX,
   Video,
   Wallet,
   X,
@@ -53,12 +56,14 @@ import {
   DynamicTeacher,
   EDUCATIONAL_STAGES,
   EducationalStage,
+  StudentApprovalStatus,
   StudentRecord,
 } from '../types/student';
 import {
   apiAddCourse,
   apiAddTeacher,
   apiDeleteCoursesBatch,
+  apiDeleteSupervisorStudent,
   apiDeleteTeacher,
   apiFetchSupervisorStudents,
   apiSendSupervisorAlerts,
@@ -73,6 +78,7 @@ import {
   getDistinctAttendanceDays,
 } from '../utils/attendance';
 import {
+  deleteFirebaseStudent,
   fetchAllFirebaseStudents,
   sendFirebaseStudentAlerts,
   updateFirebaseStudentBySupervisor,
@@ -225,6 +231,11 @@ export function SupervisorDashboard({
   const [instantActionLoading, setInstantActionLoading] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
   const [followUpActionNotice, setFollowUpActionNotice] = useState('');
+  const [approvalActionLoadingId, setApprovalActionLoadingId] = useState<string | null>(null);
+  const [approvalFeedback, setApprovalFeedback] = useState<{
+    type: 'ok' | 'error';
+    text: string;
+  } | null>(null);
 
   // Low-attendance alert composer state
   const [alertTargets, setAlertTargets] = useState<StudentRecord[] | null>(null);
@@ -351,6 +362,16 @@ export function SupervisorDashboard({
 
   const multiDeviceStudentsCount = useMemo(
     () => students.filter((s) => getStudentDevicesDisplay(s).length > 1).length,
+    [students]
+  );
+
+  const pendingStudents = useMemo(
+    () => students.filter((s) => s.approvalStatus === 'pending'),
+    [students]
+  );
+
+  const approvedStudentsCount = useMemo(
+    () => students.filter((s) => !s.approvalStatus || s.approvalStatus === 'approved').length,
     [students]
   );
 
@@ -549,6 +570,117 @@ export function SupervisorDashboard({
       }
     } finally {
       setInstantActionLoading(false);
+    }
+  };
+
+  const handleSetApprovalStatus = async (
+    student: StudentRecord,
+    nextStatus: StudentApprovalStatus
+  ) => {
+    if (approvalActionLoadingId) return;
+    setApprovalActionLoadingId(student.id);
+    setApprovalFeedback(null);
+    setFollowUpActionNotice('');
+    try {
+      if (token === 'firebase-google-session') {
+        const nextNotes =
+          nextStatus === 'approved'
+            ? 'تمت الموافقة وتفعيل الحساب.'
+            : nextStatus === 'rejected'
+              ? 'تم رفض طلب إنشاء الحساب من قِبل المشرف.'
+              : 'تم تعليق الحساب — في انتظار مراجعة المشرف.';
+        const updated = await updateFirebaseStudentBySupervisor(student.id, {
+          approvalStatus: nextStatus,
+          supervisorNotes: nextNotes,
+        });
+        setStudents((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+        if (selectedStudent?.id === updated.id) {
+          setSelectedStudent(updated);
+          setFollowUpActionNotice(
+            nextStatus === 'approved'
+              ? 'تمت الموافقة على الحساب وتفعيله بنجاح.'
+              : nextStatus === 'rejected'
+                ? 'تم رفض طلب إنشاء الحساب.'
+                : 'تم تعليق الحساب وإعادته لقائمة الانتظار.'
+          );
+        }
+        setApprovalFeedback({
+          type: 'ok',
+          text:
+            nextStatus === 'approved'
+              ? `تمت الموافقة على حساب «${student.studentName}» وتفعيله بنجاح.`
+              : nextStatus === 'rejected'
+                ? `تم رفض طلب «${student.studentName}».`
+                : `تم تحويل حساب «${student.studentName}» إلى قيد المراجعة.`,
+        });
+        return;
+      }
+
+      const result = await apiUpdateSupervisorStudent(student.id, token, {
+        approvalStatus: nextStatus,
+      });
+      if (!result.ok) {
+        setApprovalFeedback({ type: 'error', text: result.error });
+        return;
+      }
+      setStudents((prev) =>
+        prev.map((s) => (s.id === result.student.id ? result.student : s))
+      );
+      if (selectedStudent?.id === result.student.id) {
+        setSelectedStudent(result.student);
+        setFollowUpActionNotice(
+          nextStatus === 'approved'
+            ? 'تمت الموافقة على الحساب وتفعيله بنجاح.'
+            : nextStatus === 'rejected'
+              ? 'تم رفض طلب إنشاء الحساب.'
+              : 'تم تعليق الحساب وإعادته لقائمة الانتظار.'
+        );
+      }
+      setApprovalFeedback({
+        type: 'ok',
+        text:
+          nextStatus === 'approved'
+            ? `تمت الموافقة على حساب «${student.studentName}» وتفعيله بنجاح.`
+            : nextStatus === 'rejected'
+              ? `تم رفض طلب «${student.studentName}».`
+              : `تم تحويل حساب «${student.studentName}» إلى قيد المراجعة.`,
+      });
+    } catch {
+      setApprovalFeedback({
+        type: 'error',
+        text: 'تعذر تحديث حالة الموافقة على الحساب. حاول مرة أخرى.',
+      });
+    } finally {
+      setApprovalActionLoadingId(null);
+    }
+  };
+
+  const handleDeleteStudentRequest = async (student: StudentRecord) => {
+    if (approvalActionLoadingId) return;
+    setApprovalActionLoadingId(student.id);
+    setApprovalFeedback(null);
+    try {
+      if (token === 'firebase-google-session') {
+        await deleteFirebaseStudent(student.id);
+      } else {
+        const ok = await apiDeleteSupervisorStudent(student.id, token);
+        if (!ok) {
+          setApprovalFeedback({ type: 'error', text: 'تعذر حذف طلب الطالب.' });
+          return;
+        }
+      }
+      setStudents((prev) => prev.filter((s) => s.id !== student.id));
+      if (selectedStudent?.id === student.id) {
+        setSelectedStudent(null);
+      }
+      setApprovalFeedback({
+        type: 'ok',
+        text: `تم حذف طلب الطالب «${student.studentName}» نهائيًا.`,
+      });
+    } catch {
+      setApprovalFeedback({ type: 'error', text: 'تعذر حذف طلب الطالب.' });
+    } finally {
+      setApprovalActionLoadingId(null);
     }
   };
 
@@ -1035,6 +1167,7 @@ export function SupervisorDashboard({
 
   const lowAttendanceRows = useMemo(() => {
     return students
+      .filter((student) => !student.approvalStatus || student.approvalStatus === 'approved')
       .map((student) => ({
         student,
         attendance: computeStudentAttendance(student, allCourses),
@@ -1152,8 +1285,15 @@ export function SupervisorDashboard({
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-5">
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5">
-          <div className="text-xs text-slate-500 dark:text-slate-400 mb-1.5">إجمالي الطلاب المسجلين</div>
-          <div className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white tabular-nums">{students.length}</div>
+          <div className="text-xs text-slate-500 dark:text-slate-400 mb-1.5">إجمالي الطلاب المفعلين</div>
+          <div className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
+            {approvedStudentsCount}
+          </div>
+          {pendingStudents.length > 0 && (
+            <div className="text-[11px] font-semibold text-amber-700 dark:text-amber-300 mt-1 tabular-nums">
+              +{pendingStudents.length} طلب بانتظار الموافقة
+            </div>
+          )}
         </div>
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5">
           <div className="text-xs text-slate-500 dark:text-slate-400 mb-1.5">طلاب الثانوي / البكالوريا</div>
@@ -1194,6 +1334,11 @@ export function SupervisorDashboard({
         >
           <Users className="w-4 h-4" />
           <span>بيانات ومتابعة الطلاب</span>
+          {pendingStudents.length > 0 && (
+            <span className="px-1.5 py-0.5 text-[11px] font-bold bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300 rounded-md tabular-nums">
+              {pendingStudents.length}
+            </span>
+          )}
         </button>
 
         <button
@@ -2715,6 +2860,129 @@ export function SupervisorDashboard({
 
       {activeTab === 'students' && (
         <>
+          {approvalFeedback && (
+            <div
+              className={`p-3.5 rounded-xl border text-xs sm:text-sm font-semibold flex items-center justify-between gap-3 ${
+                approvalFeedback.type === 'ok'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                  : 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-red-900 dark:text-red-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{approvalFeedback.text}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setApprovalFeedback(null)}
+                aria-label="إغلاق التنبيه"
+                className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {pendingStudents.length > 0 && (
+            <div className="bg-white dark:bg-slate-900 rounded-xl border-2 border-amber-300 dark:border-amber-700 overflow-hidden shadow-xs">
+              <div className="px-5 sm:px-6 py-4 bg-amber-50/90 dark:bg-amber-950/50 border-b border-amber-200 dark:border-amber-800 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <Clock className="w-5 h-5 text-amber-700 dark:text-amber-300 shrink-0" />
+                  <div>
+                    <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
+                      طلبات إنشاء الحسابات الجديدة (بانتظار موافقتك)
+                    </h2>
+                    <p className="text-xs text-slate-600 dark:text-slate-400">
+                      لا يمكن لأي طالب تسجيل الدخول أو استخدام المنصة قبل موافقتك على طلبه هنا.
+                    </p>
+                  </div>
+                </div>
+                <span className="px-2.5 py-1 text-xs font-bold bg-amber-100 dark:bg-amber-900/70 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md tabular-nums">
+                  {pendingStudents.length}{' '}
+                  {pendingStudents.length === 1 ? 'طلب جديد' : 'طلبات جديدة'}
+                </span>
+              </div>
+
+              <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                {pendingStudents.map((stu) => {
+                  const isBusy = approvalActionLoadingId === stu.id;
+                  return (
+                    <div
+                      key={stu.id}
+                      className="p-4 sm:px-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4 hover:bg-slate-50/60 dark:hover:bg-slate-800/40"
+                    >
+                      <div className="space-y-1.5 min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-bold text-slate-900 dark:text-white">
+                            {stu.studentName}
+                          </span>
+                          <span className="px-2 py-0.5 text-[11px] font-bold bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 rounded">
+                            بانتظار الموافقة
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 dark:text-slate-400">
+                          <span>
+                            هاتف الطالب:{' '}
+                            <span className="font-mono font-semibold text-slate-900 dark:text-slate-200" dir="ltr">
+                              {stu.studentPhone}
+                            </span>
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span>
+                            {stu.stage} ({stu.specializationType}: {stu.specialization})
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                          <span>
+                            ولي الأمر: {stu.parentName} (
+                            <span className="font-mono" dir="ltr">
+                              {stu.parentPhone}
+                            </span>
+                            )
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span>اسم الأم: {stu.motherName}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => void handleSetApprovalStatus(stu, 'approved')}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors disabled:opacity-60 cursor-pointer"
+                        >
+                          <UserCheck className="w-3.5 h-3.5" />
+                          <span>موافقة وتفعيل الحساب</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => void handleSetApprovalStatus(stu, 'rejected')}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-900 dark:text-amber-200 bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors disabled:opacity-60 cursor-pointer"
+                        >
+                          <UserX className="w-3.5 h-3.5" />
+                          <span>رفض الطلب</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => void handleDeleteStudentRequest(stu)}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/60 transition-colors disabled:opacity-60 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>حذف</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {lowAttendanceRows.length > 0 && (
             <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-950/40 p-4 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 text-xs sm:text-sm font-semibold text-amber-950 dark:text-amber-100">
@@ -2870,6 +3138,16 @@ export function SupervisorDashboard({
                           <td className="py-4 px-4">
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="font-bold text-slate-900 dark:text-white">{stu.studentName}</span>
+                              {stu.approvalStatus === 'pending' && (
+                                <span className="px-2 py-0.5 text-[11px] font-semibold bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 rounded">
+                                  بانتظار الموافقة
+                                </span>
+                              )}
+                              {stu.approvalStatus === 'rejected' && (
+                                <span className="px-2 py-0.5 text-[11px] font-semibold bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300 rounded">
+                                  مرفوض
+                                </span>
+                              )}
                               {stu.isBlocked && (
                                 <span className="px-2 py-0.5 text-[11px] font-semibold bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300 rounded">
                                   محظور
@@ -2971,13 +3249,25 @@ export function SupervisorDashboard({
                             )}
                           </td>
                           <td className="py-4 px-4">
-                            <button
-                              type="button"
-                              onClick={() => openStudentFollowUp(stu)}
-                              className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 dark:bg-slate-800 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap cursor-pointer"
-                            >
-                              متابعة وتعديل
-                            </button>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {stu.approvalStatus === 'pending' && (
+                                <button
+                                  type="button"
+                                  disabled={approvalActionLoadingId === stu.id}
+                                  onClick={() => void handleSetApprovalStatus(stu, 'approved')}
+                                  className="px-2.5 py-1.5 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors whitespace-nowrap disabled:opacity-60 cursor-pointer"
+                                >
+                                  موافقة
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => openStudentFollowUp(stu)}
+                                className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 dark:bg-slate-800 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap cursor-pointer"
+                              >
+                                متابعة وتعديل
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -3150,6 +3440,115 @@ export function SupervisorDashboard({
                     })()
                   )}
                 </div>
+
+                {(() => {
+                  const status = selectedStudent.approvalStatus ?? 'approved';
+                  const isBusy = approvalActionLoadingId === selectedStudent.id;
+                  return (
+                    <div
+                      className={`rounded-xl border p-4 space-y-3 ${
+                        status === 'pending'
+                          ? 'border-amber-300 dark:border-amber-700 bg-amber-50/70 dark:bg-amber-950/40'
+                          : status === 'rejected'
+                            ? 'border-red-200 dark:border-red-800 bg-red-50/70 dark:bg-red-950/40'
+                            : 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-950/30'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div
+                            className={`p-2.5 rounded-lg shrink-0 ${
+                              status === 'pending'
+                                ? 'bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300'
+                                : status === 'rejected'
+                                  ? 'bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300'
+                                  : 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-400'
+                            }`}
+                          >
+                            {status === 'pending' ? (
+                              <Clock className="w-5 h-5" />
+                            ) : status === 'rejected' ? (
+                              <UserX className="w-5 h-5" />
+                            ) : (
+                              <UserCheck className="w-5 h-5" />
+                            )}
+                          </div>
+                          <div>
+                            <div className="text-xs text-slate-500 dark:text-slate-400">
+                              موافقة المشرف على إنشاء الحساب
+                            </div>
+                            <div
+                              className={`text-sm font-bold ${
+                                status === 'pending'
+                                  ? 'text-amber-900 dark:text-amber-200'
+                                  : status === 'rejected'
+                                    ? 'text-red-700 dark:text-red-300'
+                                    : 'text-emerald-800 dark:text-emerald-300'
+                              }`}
+                            >
+                              {status === 'pending'
+                                ? 'طلب جديد بانتظار الموافقة (الدخول غير متاح بعد)'
+                                : status === 'rejected'
+                                  ? 'تم رفض طلب إنشاء الحساب'
+                                  : 'تمت الموافقة وتفعيل الحساب'}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          {status !== 'approved' && (
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() =>
+                                void handleSetApprovalStatus(selectedStudent, 'approved')
+                              }
+                              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors disabled:opacity-60 cursor-pointer"
+                            >
+                              <UserCheck className="w-3.5 h-3.5" />
+                              <span>موافقة وتفعيل الحساب</span>
+                            </button>
+                          )}
+                          {status === 'pending' && (
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() =>
+                                void handleSetApprovalStatus(selectedStudent, 'rejected')
+                              }
+                              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-900 dark:text-amber-200 bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors disabled:opacity-60 cursor-pointer"
+                            >
+                              <UserX className="w-3.5 h-3.5" />
+                              <span>رفض الطلب</span>
+                            </button>
+                          )}
+                          {status === 'approved' && (
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() =>
+                                void handleSetApprovalStatus(selectedStudent, 'pending')
+                              }
+                              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-900 dark:text-amber-200 bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors disabled:opacity-60 cursor-pointer"
+                            >
+                              <Clock className="w-3.5 h-3.5" />
+                              <span>إلغاء التفعيل</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void handleDeleteStudentRequest(selectedStudent)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-red-700 dark:text-red-300 bg-white dark:bg-slate-900 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/50 transition-colors disabled:opacity-60 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>حذف الحساب</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 <div
                   className={`rounded-xl border p-4 space-y-3 ${

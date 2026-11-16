@@ -1,6 +1,7 @@
 import {
   DynamicTeacher,
   EducationalStage,
+  StudentApprovalStatus,
   StudentNotification,
   StudentRecord,
 } from '../types/student';
@@ -274,17 +275,24 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
 
   if (serverRes) {
     if (!serverRes.ok) {
-      // If student registered earlier while server was restarting/offline, migrate them now
+      // If student submitted a request earlier while offline/restarting, sync it as pending for the supervisor
       if (serverRes.status === 401 && phone !== SUPERVISOR_PHONE) {
         const list = getLocalStudents();
         const localIdx = list.findIndex((s) => s.studentPhone === phone);
         if (localIdx !== -1) {
           const localStu = list[localIdx];
+          if (localStu.approvalStatus === 'rejected') {
+            return {
+              ok: false,
+              error: 'لم تتم الموافقة على طلب إنشاء حسابك من قِبل المشرف.',
+            };
+          }
           const hash = await sha256Hex(password);
           if (!localStu.passwordHash || hash === localStu.passwordHash) {
             const migrated = await tryServerJson<{
-              student?: StudentRecord;
-              token?: string;
+              pendingApproval?: boolean;
+              message?: string;
+              error?: string;
             }>('/api/students/register', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -301,37 +309,22 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
                 deviceInfo,
               }),
             });
-            if (migrated?.ok && migrated.data.student && migrated.data.token) {
-              if (
-                localStu.completedLessonIds.length > 0 ||
-                Object.keys(localStu.notesByLesson || {}).length > 0 ||
-                Object.keys(localStu.quizAnswers || {}).length > 0
-              ) {
-                await tryServerJson(`/api/students/${migrated.data.student.id}/progress`, {
-                  method: 'PATCH',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${migrated.data.token}`,
-                  },
-                  body: JSON.stringify({
-                    unlockedCourseIds: localStu.unlockedCourseIds,
-                    completedLessonIds: localStu.completedLessonIds,
-                    notesByLesson: localStu.notesByLesson,
-                    quizAnswers: localStu.quizAnswers,
-                    attendanceDates: localStu.attendanceDates ?? {},
-                    deviceId,
-                    deviceInfo,
-                  }),
-                });
-              }
+            if (migrated?.ok && migrated.data.pendingApproval) {
               saveLocalStudents(list.filter((_, idx) => idx !== localIdx));
               return {
-                ok: true,
-                role: 'student',
-                student: migrated.data.student,
-                token: migrated.data.token,
+                ok: false,
+                error:
+                  migrated.data.message ||
+                  'طلب إنشاء حسابك قيد المراجعة حاليًا في انتظار موافقة المشرف.',
               };
             }
+          }
+          if (localStu.approvalStatus === 'pending') {
+            return {
+              ok: false,
+              error:
+                'طلب إنشاء حسابك قيد المراجعة حاليًا. لا يمكن تسجيل الدخول قبل موافقة المشرف.',
+            };
           }
         }
       }
@@ -386,6 +379,18 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
   if (student.passwordHash ? hash !== student.passwordHash : hash !== expectedSeedHash) {
     return { ok: false, error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' };
   }
+  if (student.approvalStatus === 'pending') {
+    return {
+      ok: false,
+      error: 'طلب إنشاء حسابك قيد المراجعة حاليًا. لا يمكن تسجيل الدخول قبل موافقة المشرف.',
+    };
+  }
+  if (student.approvalStatus === 'rejected') {
+    return {
+      ok: false,
+      error: 'لم تتم الموافقة على طلب إنشاء حسابك من قِبل المشرف.',
+    };
+  }
   if (student.isBlocked) {
     return {
       ok: false,
@@ -437,7 +442,7 @@ export async function apiRegisterStudent(payload: {
   specialization: string;
   password: string;
 }): Promise<
-  | { ok: true; student: StudentRecord; token: string }
+  | { ok: true; pendingApproval: true; message: string }
   | { ok: false; error: string }
 > {
   const deviceId = getOrCreateDeviceId();
@@ -451,8 +456,8 @@ export async function apiRegisterStudent(payload: {
   };
 
   const serverRes = await tryServerJsonWithRetry<{
-    student?: StudentRecord;
-    token?: string;
+    pendingApproval?: boolean;
+    message?: string;
     error?: string;
   }>('/api/students/register', {
     method: 'POST',
@@ -461,10 +466,10 @@ export async function apiRegisterStudent(payload: {
   });
 
   if (serverRes) {
-    if (!serverRes.ok || !serverRes.data.student || !serverRes.data.token) {
+    if (!serverRes.ok) {
       return {
         ok: false,
-        error: serverRes.data.error || 'تعذر إنشاء الحساب. راجع البيانات وحاول مجددًا.',
+        error: serverRes.data.error || 'تعذر إرسال طلب إنشاء الحساب. راجع البيانات وحاول مجددًا.',
       };
     }
     const existingLocal = getLocalStudents();
@@ -475,18 +480,33 @@ export async function apiRegisterStudent(payload: {
     }
     return {
       ok: true,
-      student: serverRes.data.student,
-      token: serverRes.data.token,
+      pendingApproval: true,
+      message:
+        serverRes.data.message ||
+        'تم إرسال طلب إنشاء الحساب بنجاح. لا يمكن تفعيل الحساب أو الدخول إلا بعد موافقة المشرف.',
     };
   }
 
   // Fallback for static preview / server restart window
   const list = getLocalStudents();
-  if (
-    normalizedPayload.studentPhone === SUPERVISOR_PHONE ||
-    list.some((s) => s.studentPhone === normalizedPayload.studentPhone)
-  ) {
-    return { ok: false, error: 'رقم الطالب مسجل بالفعل. يمكنك تسجيل الدخول مباشرة.' };
+  if (normalizedPayload.studentPhone === SUPERVISOR_PHONE) {
+    return { ok: false, error: 'هذا الرقم مسجل بالفعل في النظام.' };
+  }
+  const duplicate = list.find((s) => s.studentPhone === normalizedPayload.studentPhone);
+  if (duplicate) {
+    if (duplicate.approvalStatus === 'pending') {
+      return {
+        ok: false,
+        error: 'طلب إنشاء الحساب لهذا الرقم قيد المراجعة بالفعل في انتظار موافقة المشرف.',
+      };
+    }
+    if (duplicate.approvalStatus === 'rejected') {
+      return {
+        ok: false,
+        error: 'تم رفض طلب إنشاء الحساب لهذا الرقم من قِبل المشرف.',
+      };
+    }
+    return { ok: false, error: 'رقم الطالب مسجل ومفعل بالفعل. يمكنك تسجيل الدخول مباشرة.' };
   }
   const now = new Date().toISOString();
   const passwordHash = await sha256Hex(payload.password);
@@ -501,12 +521,13 @@ export async function apiRegisterStudent(payload: {
     specializationType: payload.stage === 'البكالوريا' ? 'مسار' : 'شعبة',
     specialization: payload.specialization,
     passwordHash,
+    approvalStatus: 'pending',
     pendingServerSync: true,
     unlockedCourseIds: [],
     completedLessonIds: [],
     quizAnswers: {},
     notesByLesson: {},
-    supervisorNotes: 'حساب جديد — في انتظار المراجعة الأولى.',
+    supervisorNotes: 'طلب تسجيل جديد — في انتظار موافقة المشرف.',
     attendanceRate: 0,
     attendanceDates: {},
     walletBalance: 0,
@@ -517,11 +538,11 @@ export async function apiRegisterStudent(payload: {
     updatedAt: now,
   };
   saveLocalStudents([newStudent, ...list]);
-  const { passwordHash: _ignored, pendingServerSync: _pending, ...safeStudent } = newStudent;
   return {
     ok: true,
-    student: safeStudent,
-    token: `local-student-${newStudent.id}`,
+    pendingApproval: true,
+    message:
+      'تم إرسال طلب إنشاء الحساب بنجاح. لا يمكن تفعيل الحساب أو الدخول إلا بعد موافقة المشرف.',
   };
 }
 
@@ -558,15 +579,16 @@ export async function apiSyncPendingStudentSession(
     deviceInfo,
   };
 
-  const res = await tryServerJson<{ student?: StudentRecord; token?: string }>(
-    '/api/students/sync-local',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    }
-  );
-  if (res?.ok && res.data.student && res.data.token) {
+  const res = await tryServerJson<{
+    student?: StudentRecord;
+    token?: string;
+    pendingApproval?: boolean;
+  }>('/api/students/sync-local', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (res?.ok && res.data.student && res.data.token && !res.data.pendingApproval) {
     saveLocalStudents(list.filter((s) => s.id !== studentId));
     return { student: res.data.student, token: res.data.token };
   }
@@ -641,6 +663,7 @@ export async function apiUpdateSupervisorStudent(
     unlockedCourseIds?: string[];
     walletBalance?: number;
     addWalletAmount?: number;
+    approvalStatus?: StudentApprovalStatus;
     isBlocked?: boolean;
     autoBlockExempt?: boolean;
     blockReason?: string;
@@ -695,12 +718,29 @@ export async function apiUpdateSupervisorStudent(
       ? updates.autoBlockExempt
       : Boolean(list[idx].autoBlockExempt) ||
         (list[idx].isBlocked === true && nextBlocked === false && nextDevices.length >= 3);
+  const nextApprovalStatus = updates.approvalStatus ?? list[idx].approvalStatus;
+  let nextNotes = updates.supervisorNotes ?? list[idx].supervisorNotes;
+  if (
+    nextApprovalStatus === 'approved' &&
+    list[idx].approvalStatus !== 'approved' &&
+    (nextNotes === 'طلب تسجيل جديد — في انتظار موافقة المشرف.' ||
+      nextNotes === 'حساب جديد — في انتظار المراجعة الأولى.')
+  ) {
+    nextNotes = 'تمت الموافقة وتفعيل الحساب.';
+  } else if (
+    nextApprovalStatus === 'rejected' &&
+    list[idx].approvalStatus !== 'rejected' &&
+    typeof updates.supervisorNotes !== 'string'
+  ) {
+    nextNotes = 'تم رفض طلب إنشاء الحساب من قِبل المشرف.';
+  }
   const updated = {
     ...list[idx],
-    supervisorNotes: updates.supervisorNotes ?? list[idx].supervisorNotes,
+    supervisorNotes: nextNotes,
     unlockedCourseIds: nextUnlocked,
     attendanceRate: autoAttendance.rate,
     walletBalance: nextWallet,
+    approvalStatus: nextApprovalStatus,
     isBlocked: nextBlocked,
     autoBlockExempt: nextAutoBlockExempt,
     blockReason: nextBlocked
@@ -714,6 +754,24 @@ export async function apiUpdateSupervisorStudent(
   saveLocalStudents(list);
   const { passwordHash: _ignored, ...safeStudent } = updated;
   return { ok: true, student: safeStudent };
+}
+
+export async function apiDeleteSupervisorStudent(
+  studentId: string,
+  token: string
+): Promise<boolean> {
+  const serverRes = await tryServerJson<{ ok?: boolean }>(
+    `/api/supervisor/students/${studentId}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+  if (serverRes) return serverRes.ok;
+
+  const list = getLocalStudents();
+  saveLocalStudents(list.filter((s) => s.id !== studentId));
+  return true;
 }
 
 export async function apiSyncStudentProgress(
@@ -783,7 +841,11 @@ export async function apiSyncStudentProgress(
 export async function apiFetchStudentProfile(
   studentId: string,
   token: string
-): Promise<StudentRecord | null> {
+): Promise<
+  | { ok: true; student: StudentRecord }
+  | { ok: false; denied: true; error: string }
+  | { ok: false; denied: false }
+> {
   const deviceId = getOrCreateDeviceId();
   const deviceInfo = getClientDeviceInfo(deviceId);
   const params = new URLSearchParams({
@@ -792,18 +854,38 @@ export async function apiFetchStudentProfile(
     deviceOs: deviceInfo.os,
     deviceType: deviceInfo.deviceType,
   });
-  const serverRes = await tryServerJson<{ student?: StudentRecord }>(
+  const serverRes = await tryServerJson<{ student?: StudentRecord; error?: string }>(
     `/api/students/${studentId}/me?${params.toString()}`,
     {
       headers: { Authorization: `Bearer ${token}` },
     }
   );
-  if (serverRes?.ok && serverRes.data.student) {
-    return serverRes.data.student;
+  if (serverRes) {
+    if (serverRes.ok && serverRes.data.student) {
+      return { ok: true, student: serverRes.data.student };
+    }
+    if (serverRes.status === 401 || serverRes.status === 403 || serverRes.status === 404) {
+      return {
+        ok: false,
+        denied: true,
+        error: serverRes.data.error || 'طلب إنشاء حسابك في انتظار موافقة المشرف.',
+      };
+    }
+    return { ok: false, denied: false };
   }
   const list = getLocalStudents();
   const foundIdx = list.findIndex((s) => s.id === studentId);
-  if (foundIdx === -1) return null;
+  if (foundIdx === -1) return { ok: false, denied: false };
+  if (list[foundIdx].approvalStatus === 'pending' || list[foundIdx].approvalStatus === 'rejected') {
+    return {
+      ok: false,
+      denied: true,
+      error:
+        list[foundIdx].approvalStatus === 'rejected'
+          ? 'لم تتم الموافقة على طلب إنشاء حسابك من قِبل المشرف.'
+          : 'طلب إنشاء حسابك قيد المراجعة حاليًا في انتظار موافقة المشرف.',
+    };
+  }
   const mergedDevices = mergeStudentDeviceEntry(
     list[foundIdx].activeDeviceIds,
     list[foundIdx].deviceDetails,
@@ -820,7 +902,7 @@ export async function apiFetchStudentProfile(
   );
   saveLocalStudents(list);
   const { passwordHash: _ignored, ...safeStudent } = list[foundIdx];
-  return safeStudent;
+  return { ok: true, student: safeStudent };
 }
 
 export async function apiPurchaseCourseWithWallet(

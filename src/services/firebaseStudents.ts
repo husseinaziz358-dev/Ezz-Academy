@@ -1,6 +1,7 @@
 import { signInWithPopup, signOut } from 'firebase/auth';
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -12,7 +13,12 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
-import { StudentDeviceInfo, StudentNotification, StudentRecord } from '../types/student';
+import {
+  StudentApprovalStatus,
+  StudentDeviceInfo,
+  StudentNotification,
+  StudentRecord,
+} from '../types/student';
 import { getOrCreateDeviceId, normalizeDigits } from '../utils/apiClient';
 import {
   getClientDeviceInfo,
@@ -97,6 +103,12 @@ function mapFirestoreToStudentRecord(
         : {},
     walletBalance:
       typeof profileData.walletBalance === 'number' ? profileData.walletBalance : 0,
+    approvalStatus:
+      profileData.approvalStatus === 'pending' ||
+      profileData.approvalStatus === 'rejected' ||
+      profileData.approvalStatus === 'approved'
+        ? profileData.approvalStatus
+        : 'approved',
     isBlocked: profileData.isBlocked === true,
     autoBlockExempt: profileData.autoBlockExempt === true,
     blockReason: typeof profileData.blockReason === 'string' ? profileData.blockReason : '',
@@ -221,6 +233,20 @@ export async function signInWithGooglePopup(): Promise<
 
     const existing = await loadFirebaseStudentByUid(user.uid);
     if (existing) {
+      if (existing.approvalStatus === 'pending') {
+        await signOut(auth).catch(() => {});
+        return {
+          ok: false,
+          error: 'طلب إنشاء حسابك قيد المراجعة حاليًا. لا يمكن تسجيل الدخول قبل موافقة المشرف.',
+        };
+      }
+      if (existing.approvalStatus === 'rejected') {
+        await signOut(auth).catch(() => {});
+        return {
+          ok: false,
+          error: 'لم تتم الموافقة على طلب إنشاء حسابك من قِبل المشرف.',
+        };
+      }
       if (existing.isBlocked) {
         await signOut(auth).catch(() => {});
         return {
@@ -305,7 +331,7 @@ export async function createFirebaseStudentProfile(
   }
 
   const unlockedCourseIds: string[] = [];
-  const supervisorNotes = 'حساب جديد — في انتظار المراجعة الأولى.';
+  const supervisorNotes = 'طلب تسجيل جديد — في انتظار موافقة المشرف.';
   const deviceId = getOrCreateDeviceId();
   const deviceInfo = getClientDeviceInfo(deviceId);
   const initialDeviceDetails: Record<string, StudentDeviceInfo> = {
@@ -327,6 +353,7 @@ export async function createFirebaseStudentProfile(
     attendanceRate: 0,
     attendanceDates: {},
     walletBalance: 0,
+    approvalStatus: 'pending',
     isBlocked: false,
     autoBlockExempt: false,
     blockReason: '',
@@ -378,6 +405,7 @@ export async function createFirebaseStudentProfile(
       attendanceRate: 0,
       attendanceDates: {},
       walletBalance: 0,
+      approvalStatus: 'pending',
       isBlocked: false,
       autoBlockExempt: false,
       blockReason: '',
@@ -505,6 +533,7 @@ export async function updateFirebaseStudentBySupervisor(
     attendanceRate?: number;
     unlockedCourseIds?: string[];
     walletBalance?: number;
+    approvalStatus?: StudentApprovalStatus;
     isBlocked?: boolean;
     autoBlockExempt?: boolean;
     blockReason?: string;
@@ -530,6 +559,13 @@ export async function updateFirebaseStudentBySupervisor(
   }
   if (typeof updates.walletBalance === 'number' && Number.isFinite(updates.walletBalance)) {
     updatePayload.walletBalance = Math.max(0, Math.min(1000000, Math.round(updates.walletBalance)));
+  }
+  if (
+    updates.approvalStatus === 'pending' ||
+    updates.approvalStatus === 'approved' ||
+    updates.approvalStatus === 'rejected'
+  ) {
+    updatePayload.approvalStatus = updates.approvalStatus;
   }
   if (typeof updates.isBlocked === 'boolean') {
     updatePayload.isBlocked = updates.isBlocked;
@@ -561,6 +597,18 @@ export async function updateFirebaseStudentBySupervisor(
     throw new Error('تعذر قراءة ملف الطالب بعد التحديث.');
   }
   return refreshed;
+}
+
+export async function deleteFirebaseStudent(studentUid: string): Promise<void> {
+  if (!ID_PATTERN.test(studentUid)) {
+    throw new Error('معرف الطالب غير صالح.');
+  }
+  try {
+    await deleteDoc(doc(db, 'students', studentUid, 'private', 'contact')).catch(() => undefined);
+    await deleteDoc(doc(db, 'students', studentUid));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `students/${studentUid}`);
+  }
 }
 
 export async function sendFirebaseStudentAlerts(

@@ -98,6 +98,11 @@
           "type": "integer",
           "description": "Student wallet balance in EGP added by supervisor and spent on course purchases."
         },
+        "approvalStatus": {
+          "type": "string",
+          "description": "Supervisor approval status controlling whether a student account can sign in.",
+          "enum": ["pending", "approved", "rejected"]
+        },
         "isBlocked": {
           "type": "boolean",
           "description": "Whether the student account has been blocked by the supervisor or automatically."

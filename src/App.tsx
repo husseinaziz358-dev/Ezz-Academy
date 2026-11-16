@@ -370,6 +370,15 @@ export default function App() {
       try {
         const fresh = await loadFirebaseStudentByUid(cur.studentId);
         if (!fresh) return;
+        if (fresh.approvalStatus === 'pending' || fresh.approvalStatus === 'rejected') {
+          setBlockedBanner(
+            fresh.approvalStatus === 'rejected'
+              ? 'لم تتم الموافقة على طلب إنشاء حسابك من قِبل المشرف.'
+              : 'طلب إنشاء حسابك قيد المراجعة حاليًا. لا يمكن استخدام الحساب قبل موافقة المشرف.'
+          );
+          handleLogout();
+          return;
+        }
         if (fresh.isBlocked) {
           setBlockedBanner(
             fresh.blockReason || 'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.'
@@ -450,8 +459,24 @@ export default function App() {
       }
     }
 
-    const fresh = await apiFetchStudentProfile(cur.studentId, cur.token);
-    if (!fresh) return;
+    const profileRes = await apiFetchStudentProfile(cur.studentId, cur.token);
+    if (!profileRes.ok) {
+      if (profileRes.denied) {
+        setBlockedBanner(profileRes.error);
+        handleLogout();
+      }
+      return;
+    }
+    const fresh = profileRes.student;
+    if (fresh.approvalStatus === 'pending' || fresh.approvalStatus === 'rejected') {
+      setBlockedBanner(
+        fresh.approvalStatus === 'rejected'
+          ? 'لم تتم الموافقة على طلب إنشاء حسابك من قِبل المشرف.'
+          : 'طلب إنشاء حسابك قيد المراجعة حاليًا. لا يمكن استخدام الحساب قبل موافقة المشرف.'
+      );
+      handleLogout();
+      return;
+    }
     if (fresh.isBlocked) {
       setBlockedBanner(
         fresh.blockReason || 'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.'
@@ -620,6 +645,16 @@ export default function App() {
   };
 
   const handleStudentAuthenticated = (student: StudentRecord, token: string) => {
+    if (student.approvalStatus === 'pending') {
+      setBlockedBanner(
+        'طلب إنشاء حسابك قيد المراجعة حاليًا. لا يمكن تسجيل الدخول قبل موافقة المشرف.'
+      );
+      return;
+    }
+    if (student.approvalStatus === 'rejected') {
+      setBlockedBanner('لم تتم الموافقة على طلب إنشاء حسابك من قِبل المشرف.');
+      return;
+    }
     if (student.isBlocked) {
       setBlockedBanner(
         student.blockReason || 'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.'

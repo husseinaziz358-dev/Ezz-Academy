@@ -21,6 +21,8 @@ export interface StudentDeviceInfo {
   lastSeenAt: string;
 }
 
+export type StudentApprovalStatus = 'pending' | 'approved' | 'rejected';
+
 export interface StudentRecord {
   id: string;
   studentName: string;
@@ -31,6 +33,7 @@ export interface StudentRecord {
   stage: string;
   specializationType: 'شعبة' | 'مسار';
   specialization: string;
+  approvalStatus?: StudentApprovalStatus;
   unlockedCourseIds: string[];
   completedLessonIds: string[];
   quizAnswers: Record<string, number>;

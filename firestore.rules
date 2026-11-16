@@ -68,6 +68,7 @@ service cloud.firestore {
         'attendanceRate',
         'attendanceDates',
         'walletBalance',
+        'approvalStatus',
         'isBlocked',
         'autoBlockExempt',
         'blockReason',
@@ -108,6 +109,7 @@ service cloud.firestore {
       && data.attendanceRate <= 100
       && (!('attendanceDates' in data) || (data.attendanceDates is map && data.attendanceDates.size() <= 200))
       && (!('walletBalance' in data) || (data.walletBalance is int && data.walletBalance >= 0 && data.walletBalance <= 1000000))
+      && (!('approvalStatus' in data) || data.approvalStatus in ['pending', 'approved', 'rejected'])
       && (!('isBlocked' in data) || data.isBlocked is bool)
       && (!('autoBlockExempt' in data) || data.autoBlockExempt is bool)
       && (!('blockReason' in data) || (data.blockReason is string && data.blockReason.size() <= 300))
@@ -201,9 +203,10 @@ service cloud.firestore {
         && isOwner(studentUid)
         && isValidStudent(incoming(), studentUid)
         && incoming().uid == request.auth.uid
-        && incoming().supervisorNotes == 'حساب جديد — في انتظار المراجعة الأولى.'
+        && (incoming().supervisorNotes == 'طلب تسجيل جديد — في انتظار موافقة المشرف.' || incoming().supervisorNotes == 'حساب جديد — في انتظار المراجعة الأولى.')
         && incoming().attendanceRate == 0
         && (!('walletBalance' in incoming()) || incoming().walletBalance == 0)
+        && (!('approvalStatus' in incoming()) || incoming().approvalStatus == 'pending')
         && (!('isBlocked' in incoming()) || incoming().isBlocked == false)
         && (!('autoBlockExempt' in incoming()) || incoming().autoBlockExempt == false)
         && (!('blockReason' in incoming()) || incoming().blockReason == '')
@@ -218,6 +221,7 @@ service cloud.firestore {
           isAdmin()
           || (
             isOwner(studentUid)
+            && (!('approvalStatus' in existing()) || existing().approvalStatus == 'approved')
             && (!('isBlocked' in existing()) || existing().isBlocked == false)
             && (!('walletBalance' in incoming()) || (!('walletBalance' in existing()) && incoming().walletBalance == 0) || ('walletBalance' in existing() && incoming().walletBalance <= existing().walletBalance))
             && (!('isBlocked' in incoming()) || incoming().isBlocked == false || (incoming().isBlocked == true && (!('autoBlockExempt' in existing()) || existing().autoBlockExempt == false)))

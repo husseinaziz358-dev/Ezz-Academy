@@ -77,6 +77,7 @@ export interface StudentRecord {
   attendanceRate: number;
   attendanceDates?: Record<string, string>;
   walletBalance?: number;
+  approvalStatus?: 'pending' | 'approved' | 'rejected';
   isBlocked?: boolean;
   autoBlockExempt?: boolean;
   blockReason?: string;
@@ -451,6 +452,22 @@ async function startServer() {
         return;
       }
 
+      if (student.approvalStatus === 'pending') {
+        res.status(403).json({
+          pendingApproval: true,
+          error:
+            'طلب إنشاء حسابك قيد المراجعة حاليًا. لا يمكن تسجيل الدخول قبل موافقة المشرف.',
+        });
+        return;
+      }
+
+      if (student.approvalStatus === 'rejected') {
+        res.status(403).json({
+          error: 'لم تتم الموافقة على طلب إنشاء حسابك من قِبل المشرف.',
+        });
+        return;
+      }
+
       if (student.isBlocked) {
         res.status(403).json({
           error:
@@ -541,8 +558,21 @@ async function startServer() {
       const students = await ensureDb();
       const duplicate = students.find((s) => s.studentPhone === studentPhone);
       if (duplicate) {
+        if (duplicate.approvalStatus === 'pending') {
+          res.status(409).json({
+            error:
+              'طلب إنشاء الحساب لهذا الرقم قيد المراجعة بالفعل في انتظار موافقة المشرف.',
+          });
+          return;
+        }
+        if (duplicate.approvalStatus === 'rejected') {
+          res.status(403).json({
+            error: 'تم رفض طلب إنشاء الحساب لهذا الرقم من قِبل المشرف.',
+          });
+          return;
+        }
         res.status(409).json({
-          error: 'رقم الطالب مسجل بالفعل. يمكنك تسجيل الدخول مباشرة.',
+          error: 'رقم الطالب مسجل ومفعل بالفعل. يمكنك تسجيل الدخول مباشرة.',
         });
         return;
       }
@@ -568,11 +598,12 @@ async function startServer() {
         specializationType,
         specialization,
         passwordHash: hashStudentPassword(password),
+        approvalStatus: 'pending',
         unlockedCourseIds: [],
         completedLessonIds: [],
         quizAnswers: {},
         notesByLesson: {},
-        supervisorNotes: 'حساب جديد — في انتظار المراجعة الأولى.',
+        supervisorNotes: 'طلب تسجيل جديد — في انتظار موافقة المشرف.',
         attendanceRate: 0,
         attendanceDates: {},
         walletBalance: 0,
@@ -588,8 +619,11 @@ async function startServer() {
       students.unshift(newStudent);
       await saveDb(students);
 
-      const token = signToken({ role: 'student', sub: newStudent.id });
-      res.status(201).json({ student: sanitizeStudent(newStudent), token });
+      res.status(201).json({
+        pendingApproval: true,
+        message:
+          'تم إرسال طلب إنشاء الحساب بنجاح. لا يمكن تفعيل الحساب أو الدخول إلا بعد موافقة المشرف.',
+      });
     } catch (err) {
       console.error('Register error:', err);
       res.status(500).json({ error: 'تعذر تسجيل الحساب على الخادم.' });
@@ -627,6 +661,20 @@ async function startServer() {
         ? students.find((s) => s.id === incomingId)
         : undefined;
       if (existingById) {
+        if (existingById.approvalStatus === 'pending') {
+          res.json({
+            alreadyExists: true,
+            pendingApproval: true,
+            message: 'طلب إنشاء الحساب قيد المراجعة حاليًا في انتظار موافقة المشرف.',
+          });
+          return;
+        }
+        if (existingById.approvalStatus === 'rejected') {
+          res.status(403).json({
+            error: 'لم تتم الموافقة على طلب إنشاء حسابك من قِبل المشرف.',
+          });
+          return;
+        }
         if (existingById.isBlocked) {
           res.status(403).json({
             error:
@@ -642,6 +690,14 @@ async function startServer() {
 
       const existingByPhone = students.find((s) => s.studentPhone === studentPhone);
       if (existingByPhone) {
+        if (existingByPhone.approvalStatus === 'pending') {
+          res.json({
+            alreadyExists: true,
+            pendingApproval: true,
+            message: 'طلب إنشاء الحساب قيد المراجعة حاليًا في انتظار موافقة المشرف.',
+          });
+          return;
+        }
         res.status(409).json({
           error: 'رقم الطالب مسجل بالفعل. يمكنك تسجيل الدخول مباشرة.',
         });
@@ -678,6 +734,7 @@ async function startServer() {
         stage,
         specializationType,
         specialization,
+        approvalStatus: 'pending',
         unlockedCourseIds: Array.isArray(req.body?.unlockedCourseIds)
           ? (req.body.unlockedCourseIds as unknown[]).map((c) => String(c))
           : [],
@@ -692,7 +749,7 @@ async function startServer() {
           req.body?.notesByLesson && typeof req.body.notesByLesson === 'object'
             ? (req.body.notesByLesson as Record<string, string>)
             : {},
-        supervisorNotes: 'حساب جديد — في انتظار المراجعة الأولى.',
+        supervisorNotes: 'طلب تسجيل جديد — في انتظار موافقة المشرف.',
         attendanceRate: Number(req.body?.attendanceRate) || 0,
         attendanceDates:
           req.body?.attendanceDates && typeof req.body.attendanceDates === 'object'
@@ -710,8 +767,10 @@ async function startServer() {
 
       students.unshift(newStudent);
       await saveDb(students);
-      const token = signToken({ role: 'student', sub: newStudent.id });
-      res.status(201).json({ student: sanitizeStudent(newStudent), token });
+      res.status(201).json({
+        pendingApproval: true,
+        message: 'تم إرسال طلب إنشاء الحساب بنجاح في انتظار موافقة المشرف.',
+      });
     } catch (err) {
       console.error('Sync local student error:', err);
       res.status(500).json({ error: 'تعذر مزامنة بيانات الطالب على الخادم.' });
@@ -762,6 +821,12 @@ async function startServer() {
 
           const now = new Date().toISOString();
           const newId = id && id.startsWith('stu-') ? id : `stu-${Date.now()}-${importedCount}`;
+          const importedApproval =
+            raw.approvalStatus === 'approved' ||
+            raw.approvalStatus === 'rejected' ||
+            raw.approvalStatus === 'pending'
+              ? raw.approvalStatus
+              : 'pending';
           const newRecord: StudentRecord = {
             id: newId,
             studentName,
@@ -772,6 +837,7 @@ async function startServer() {
             stage,
             specializationType: stage === 'البكالوريا' ? 'مسار' : 'شعبة',
             specialization,
+            approvalStatus: importedApproval,
             unlockedCourseIds: Array.isArray(raw.unlockedCourseIds)
               ? (raw.unlockedCourseIds as unknown[]).map((c) => String(c))
               : [],
@@ -789,7 +855,7 @@ async function startServer() {
             supervisorNotes:
               typeof raw.supervisorNotes === 'string' && raw.supervisorNotes.trim()
                 ? raw.supervisorNotes
-                : 'حساب جديد — في انتظار المراجعة الأولى.',
+                : 'طلب تسجيل جديد — في انتظار موافقة المشرف.',
             attendanceRate: Number(raw.attendanceRate) || 0,
             attendanceDates:
               raw.attendanceDates && typeof raw.attendanceDates === 'object'
@@ -860,6 +926,12 @@ async function startServer() {
       }
 
       const existing = students[idx];
+      if (existing.approvalStatus === 'pending' || existing.approvalStatus === 'rejected') {
+        res.status(403).json({
+          error: 'الحساب في انتظار موافقة المشرف ولا يمكن تعديل التقدم حاليًا.',
+        });
+        return;
+      }
       if (existing.isBlocked) {
         res.status(403).json({ error: 'تم حظر هذا الحساب من قِبل الإدارة.' });
         return;
@@ -956,6 +1028,18 @@ async function startServer() {
         res.status(404).json({ error: 'الطالب غير موجود.' });
         return;
       }
+      if (
+        students[idx].approvalStatus === 'pending' ||
+        students[idx].approvalStatus === 'rejected'
+      ) {
+        res.status(403).json({
+          error:
+            students[idx].approvalStatus === 'rejected'
+              ? 'لم تتم الموافقة على طلب إنشاء حسابك من قِبل المشرف.'
+              : 'طلب إنشاء حسابك قيد المراجعة حاليًا في انتظار موافقة المشرف.',
+        });
+        return;
+      }
       const deviceId = String(req.query.deviceId ?? '').trim().slice(0, 100);
       if (deviceId && !students[idx].isBlocked) {
         const ua = String(req.headers['user-agent'] ?? '');
@@ -1026,6 +1110,10 @@ async function startServer() {
         return;
       }
       const existing = students[idx];
+      if (existing.approvalStatus === 'pending' || existing.approvalStatus === 'rejected') {
+        res.status(403).json({ error: 'الحساب في انتظار موافقة المشرف.' });
+        return;
+      }
       if (existing.isBlocked) {
         res.status(403).json({ error: 'تم حظر هذا الحساب من قِبل الإدارة.' });
         return;
@@ -1162,15 +1250,39 @@ async function startServer() {
             : existing.blockReason || 'تم حظر الحساب من قِبل الإدارة.'
           : '';
 
+        const nextApprovalStatus =
+          req.body?.approvalStatus === 'approved' ||
+          req.body?.approvalStatus === 'rejected' ||
+          req.body?.approvalStatus === 'pending'
+            ? req.body.approvalStatus
+            : existing.approvalStatus;
+
+        let nextNotes =
+          typeof req.body?.supervisorNotes === 'string'
+            ? req.body.supervisorNotes
+            : existing.supervisorNotes;
+        if (
+          nextApprovalStatus === 'approved' &&
+          existing.approvalStatus !== 'approved' &&
+          (nextNotes === 'طلب تسجيل جديد — في انتظار موافقة المشرف.' ||
+            nextNotes === 'حساب جديد — في انتظار المراجعة الأولى.')
+        ) {
+          nextNotes = 'تمت الموافقة وتفعيل الحساب.';
+        } else if (
+          nextApprovalStatus === 'rejected' &&
+          existing.approvalStatus !== 'rejected' &&
+          typeof req.body?.supervisorNotes !== 'string'
+        ) {
+          nextNotes = 'تم رفض طلب إنشاء الحساب من قِبل المشرف.';
+        }
+
         const updated: StudentRecord = {
           ...existing,
-          supervisorNotes:
-            typeof req.body?.supervisorNotes === 'string'
-              ? req.body.supervisorNotes
-              : existing.supervisorNotes,
+          supervisorNotes: nextNotes,
           attendanceRate: autoAttendance.rate,
           unlockedCourseIds: nextUnlocked,
           walletBalance: nextWallet,
+          approvalStatus: nextApprovalStatus,
           isBlocked: nextBlocked,
           autoBlockExempt: nextAutoBlockExempt,
           blockReason: nextBlockReason,
@@ -1185,6 +1297,27 @@ async function startServer() {
       } catch (err) {
         console.error('Supervisor update error:', err);
         res.status(500).json({ error: 'تعذر تحديث بيانات الطالب.' });
+      }
+    }
+  );
+
+  // Supervisor: delete a pending or rejected student registration request
+  app.delete(
+    '/api/supervisor/students/:id',
+    requireSupervisor,
+    async (req: Request, res: Response) => {
+      try {
+        const students = await ensureDb();
+        const nextStudents = students.filter((s) => s.id !== req.params.id);
+        if (nextStudents.length === students.length) {
+          res.status(404).json({ error: 'الطالب غير موجود.' });
+          return;
+        }
+        await saveDb(nextStudents);
+        res.json({ ok: true });
+      } catch (err) {
+        console.error('Supervisor delete student error:', err);
+        res.status(500).json({ error: 'تعذر حذف طلب الطالب.' });
       }
     }
   );
