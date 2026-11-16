@@ -143,14 +143,19 @@ async function sha256Hex(text: string): Promise<string> {
   return pureSha256Hex(text);
 }
 
-const SEED_FALLBACK_STUDENTS: StudentRecord[] = [];
+type LocalStudentRecord = StudentRecord & {
+  passwordHash?: string;
+  pendingServerSync?: boolean;
+};
 
-function getLocalStudents(): (StudentRecord & { passwordHash?: string })[] {
+const SEED_FALLBACK_STUDENTS: LocalStudentRecord[] = [];
+
+function getLocalStudents(): LocalStudentRecord[] {
   try {
     const raw = window.localStorage.getItem(FALLBACK_DB_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return parsed as LocalStudentRecord[];
     }
   } catch {
     // Ignore storage read error
@@ -158,7 +163,7 @@ function getLocalStudents(): (StudentRecord & { passwordHash?: string })[] {
   return [...SEED_FALLBACK_STUDENTS];
 }
 
-function saveLocalStudents(list: (StudentRecord & { passwordHash?: string })[]) {
+function saveLocalStudents(list: LocalStudentRecord[]) {
   try {
     window.localStorage.setItem(FALLBACK_DB_KEY, JSON.stringify(list));
   } catch {
@@ -236,6 +241,16 @@ async function tryServerJson<T>(
   }
 }
 
+async function tryServerJsonWithRetry<T>(
+  url: string,
+  options?: RequestInit
+): Promise<{ ok: boolean; status: number; data: T } | null> {
+  const first = await tryServerJson<T>(url, options);
+  if (first !== null) return first;
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  return tryServerJson<T>(url, options);
+}
+
 export async function apiLogin(phoneInput: string, password: string): Promise<
   | { ok: true; role: 'supervisor'; name: string; phone: string; token: string }
   | { ok: true; role: 'student'; student: StudentRecord; token: string }
@@ -244,7 +259,7 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
   const phone = normalizeDigits(phoneInput);
   const deviceId = getOrCreateDeviceId();
   const deviceInfo = getClientDeviceInfo(deviceId);
-  const serverRes = await tryServerJson<{
+  const serverRes = await tryServerJsonWithRetry<{
     role?: 'supervisor' | 'student';
     name?: string;
     phone?: string;
@@ -259,6 +274,67 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
 
   if (serverRes) {
     if (!serverRes.ok) {
+      // If student registered earlier while server was restarting/offline, migrate them now
+      if (serverRes.status === 401 && phone !== SUPERVISOR_PHONE) {
+        const list = getLocalStudents();
+        const localIdx = list.findIndex((s) => s.studentPhone === phone);
+        if (localIdx !== -1) {
+          const localStu = list[localIdx];
+          const hash = await sha256Hex(password);
+          if (!localStu.passwordHash || hash === localStu.passwordHash) {
+            const migrated = await tryServerJson<{
+              student?: StudentRecord;
+              token?: string;
+            }>('/api/students/register', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                studentName: localStu.studentName,
+                studentPhone: localStu.studentPhone,
+                parentName: localStu.parentName,
+                parentPhone: localStu.parentPhone,
+                motherName: localStu.motherName,
+                stage: localStu.stage,
+                specialization: localStu.specialization,
+                password,
+                deviceId,
+                deviceInfo,
+              }),
+            });
+            if (migrated?.ok && migrated.data.student && migrated.data.token) {
+              if (
+                localStu.completedLessonIds.length > 0 ||
+                Object.keys(localStu.notesByLesson || {}).length > 0 ||
+                Object.keys(localStu.quizAnswers || {}).length > 0
+              ) {
+                await tryServerJson(`/api/students/${migrated.data.student.id}/progress`, {
+                  method: 'PATCH',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${migrated.data.token}`,
+                  },
+                  body: JSON.stringify({
+                    unlockedCourseIds: localStu.unlockedCourseIds,
+                    completedLessonIds: localStu.completedLessonIds,
+                    notesByLesson: localStu.notesByLesson,
+                    quizAnswers: localStu.quizAnswers,
+                    attendanceDates: localStu.attendanceDates ?? {},
+                    deviceId,
+                    deviceInfo,
+                  }),
+                });
+              }
+              saveLocalStudents(list.filter((_, idx) => idx !== localIdx));
+              return {
+                ok: true,
+                role: 'student',
+                student: migrated.data.student,
+                token: migrated.data.token,
+              };
+            }
+          }
+        }
+      }
       return {
         ok: false,
         error: serverRes.data.error || 'رقم الهاتف أو كلمة المرور غير صحيحة.',
@@ -374,7 +450,7 @@ export async function apiRegisterStudent(payload: {
     deviceInfo,
   };
 
-  const serverRes = await tryServerJson<{
+  const serverRes = await tryServerJsonWithRetry<{
     student?: StudentRecord;
     token?: string;
     error?: string;
@@ -391,6 +467,12 @@ export async function apiRegisterStudent(payload: {
         error: serverRes.data.error || 'تعذر إنشاء الحساب. راجع البيانات وحاول مجددًا.',
       };
     }
+    const existingLocal = getLocalStudents();
+    if (existingLocal.some((s) => s.studentPhone === normalizedPayload.studentPhone)) {
+      saveLocalStudents(
+        existingLocal.filter((s) => s.studentPhone !== normalizedPayload.studentPhone)
+      );
+    }
     return {
       ok: true,
       student: serverRes.data.student,
@@ -398,7 +480,7 @@ export async function apiRegisterStudent(payload: {
     };
   }
 
-  // Fallback for static preview
+  // Fallback for static preview / server restart window
   const list = getLocalStudents();
   if (
     normalizedPayload.studentPhone === SUPERVISOR_PHONE ||
@@ -408,7 +490,7 @@ export async function apiRegisterStudent(payload: {
   }
   const now = new Date().toISOString();
   const passwordHash = await sha256Hex(payload.password);
-  const newStudent: StudentRecord & { passwordHash?: string } = {
+  const newStudent: LocalStudentRecord = {
     id: `stu-${Date.now()}`,
     studentName: payload.studentName.trim(),
     studentPhone: normalizedPayload.studentPhone,
@@ -419,6 +501,7 @@ export async function apiRegisterStudent(payload: {
     specializationType: payload.stage === 'البكالوريا' ? 'مسار' : 'شعبة',
     specialization: payload.specialization,
     passwordHash,
+    pendingServerSync: true,
     unlockedCourseIds: [],
     completedLessonIds: [],
     quizAnswers: {},
@@ -434,7 +517,7 @@ export async function apiRegisterStudent(payload: {
     updatedAt: now,
   };
   saveLocalStudents([newStudent, ...list]);
-  const { passwordHash: _ignored, ...safeStudent } = newStudent;
+  const { passwordHash: _ignored, pendingServerSync: _pending, ...safeStudent } = newStudent;
   return {
     ok: true,
     student: safeStudent,
@@ -442,10 +525,90 @@ export async function apiRegisterStudent(payload: {
   };
 }
 
+export async function apiSyncPendingStudentSession(
+  studentId: string,
+  currentToken: string
+): Promise<{ student: StudentRecord; token: string } | null> {
+  if (!currentToken.startsWith('local-student-')) return null;
+  const list = getLocalStudents();
+  const localStu = list.find((s) => s.id === studentId);
+  if (!localStu) return null;
+
+  const deviceId = getOrCreateDeviceId();
+  const deviceInfo = getClientDeviceInfo(deviceId);
+  const payload = {
+    id: localStu.id,
+    studentName: localStu.studentName,
+    studentPhone: localStu.studentPhone,
+    parentName: localStu.parentName,
+    parentPhone: localStu.parentPhone,
+    motherName: localStu.motherName,
+    stage: localStu.stage,
+    specialization: localStu.specialization,
+    unlockedCourseIds: localStu.unlockedCourseIds,
+    completedLessonIds: localStu.completedLessonIds,
+    notesByLesson: localStu.notesByLesson,
+    quizAnswers: localStu.quizAnswers,
+    attendanceRate: localStu.attendanceRate,
+    attendanceDates: localStu.attendanceDates ?? {},
+    activeDeviceIds: localStu.activeDeviceIds ?? [deviceId],
+    deviceDetails: localStu.deviceDetails ?? { [deviceId]: deviceInfo },
+    createdAt: localStu.createdAt,
+    deviceId,
+    deviceInfo,
+  };
+
+  const res = await tryServerJson<{ student?: StudentRecord; token?: string }>(
+    '/api/students/sync-local',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (res?.ok && res.data.student && res.data.token) {
+    saveLocalStudents(list.filter((s) => s.id !== studentId));
+    return { student: res.data.student, token: res.data.token };
+  }
+  return null;
+}
+
 export async function apiFetchSupervisorStudents(token: string): Promise<
   | { ok: true; students: StudentRecord[] }
   | { ok: false; error: string }
 > {
+  if (token === 'local-supervisor-session') {
+    const catalog = getLocalCatalog();
+    const merged = mergeCatalogCourses(catalog.customCourses, COURSES);
+    return {
+      ok: true,
+      students: getLocalStudents().map(({ passwordHash: _ignored, pendingServerSync: _p, ...safe }) => ({
+        ...safe,
+        attendanceRate: computeStudentAttendance(safe, merged).rate,
+      })),
+    };
+  }
+
+  // First import any students that were registered offline/during restart in this browser
+  const localPending = getLocalStudents();
+  if (localPending.length > 0 && token && token !== 'firebase-google-session' && !token.startsWith('local-')) {
+    const importRes = await tryServerJson<{
+      importedCount?: number;
+      students?: StudentRecord[];
+    }>('/api/supervisor/students/import-local', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ students: localPending }),
+    });
+    if (importRes?.ok && Array.isArray(importRes.data.students)) {
+      saveLocalStudents([]);
+      return { ok: true, students: importRes.data.students };
+    }
+  }
+
   const serverRes = await tryServerJson<{ students?: StudentRecord[]; error?: string }>(
     '/api/supervisor/students',
     { headers: { Authorization: `Bearer ${token}` } }
@@ -462,7 +625,7 @@ export async function apiFetchSupervisorStudents(token: string): Promise<
   const merged = mergeCatalogCourses(catalog.customCourses, COURSES);
   return {
     ok: true,
-    students: getLocalStudents().map(({ passwordHash: _ignored, ...safe }) => ({
+    students: getLocalStudents().map(({ passwordHash: _ignored, pendingServerSync: _p, ...safe }) => ({
       ...safe,
       attendanceRate: computeStudentAttendance(safe, merged).rate,
     })),
@@ -567,19 +730,21 @@ export async function apiSyncStudentProgress(
 ): Promise<void> {
   const deviceId = getOrCreateDeviceId();
   const deviceInfo = getClientDeviceInfo(deviceId);
-  const serverRes = await tryServerJson<{ student?: StudentRecord }>(
-    `/api/students/${studentId}/progress`,
-    {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ ...updates, deviceId, deviceInfo }),
-    }
-  );
+  if (!token.startsWith('local-')) {
+    const serverRes = await tryServerJson<{ student?: StudentRecord }>(
+      `/api/students/${studentId}/progress`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ ...updates, deviceId, deviceInfo }),
+      }
+    );
 
-  if (serverRes) return;
+    if (serverRes?.ok) return;
+  }
 
   const list = getLocalStudents();
   const idx = list.findIndex((s) => s.id === studentId);

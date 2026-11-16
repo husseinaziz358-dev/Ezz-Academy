@@ -336,8 +336,16 @@ export function SupervisorDashboard({
         loadStudents(true);
       }
     };
+    const intervalId = window.setInterval(() => {
+      if (activeTab === 'students' || activeTab === 'low-attendance') {
+        loadStudents(true);
+      }
+    }, 10000);
     window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, token]);
 

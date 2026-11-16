@@ -23,6 +23,7 @@ import {
   Search,
   Sun,
   Upload,
+  UserCheck,
   Wallet,
   X,
 } from 'lucide-react';
@@ -56,6 +57,7 @@ import {
   apiFetchStudentProfile,
   apiMarkStudentNotificationsRead,
   apiPurchaseCourseWithWallet,
+  apiSyncPendingStudentSession,
   apiSyncStudentProgress,
   apiUpdateHeroImage,
   apiUploadMediaFile,
@@ -423,6 +425,31 @@ export default function App() {
       return;
     }
 
+    if (cur.token.startsWith('local-student-')) {
+      const upgraded = await apiSyncPendingStudentSession(cur.studentId, cur.token);
+      if (upgraded) {
+        if (upgraded.student.isBlocked) {
+          setBlockedBanner(
+            upgraded.student.blockReason ||
+              'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.'
+          );
+          handleLogout();
+          return;
+        }
+        setSession((prev) => ({
+          ...prev,
+          token: upgraded.token,
+          walletBalance: upgraded.student.walletBalance ?? prev.walletBalance,
+          autoBlockExempt: upgraded.student.autoBlockExempt === true,
+          unlockedCourseIds: upgraded.student.unlockedCourseIds,
+          activeDeviceIds: upgraded.student.activeDeviceIds ?? prev.activeDeviceIds,
+          deviceDetails: upgraded.student.deviceDetails ?? prev.deviceDetails,
+          notifications: upgraded.student.notifications ?? prev.notifications,
+        }));
+        return;
+      }
+    }
+
     const fresh = await apiFetchStudentProfile(cur.studentId, cur.token);
     if (!fresh) return;
     if (fresh.isBlocked) {
@@ -446,6 +473,11 @@ export default function App() {
   useEffect(() => {
     if (session.role === 'student' && session.studentId) {
       void refreshStudentAccount();
+      const handleFocus = () => {
+        void refreshStudentAccount();
+      };
+      window.addEventListener('focus', handleFocus);
+      return () => window.removeEventListener('focus', handleFocus);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.role, session.studentId, session.token]);
@@ -832,11 +864,12 @@ export default function App() {
     }
   };
 
+  const studentFirstName = session.studentName.trim().split(/\s+/)[0] || 'الطالب';
   const headerPrimaryLabel =
     session.role === 'supervisor'
       ? 'حسابي'
       : session.role === 'student'
-        ? 'حساب الطالب'
+        ? `حسابي · ${studentFirstName}`
         : 'تسجيل الدخول';
 
   const handleHeaderPrimaryClick = () => {
@@ -951,9 +984,13 @@ export default function App() {
             <button
               type="button"
               onClick={handleHeaderPrimaryClick}
-              className="hidden sm:inline-flex items-center px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-4 py-1.5 sm:py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              {headerPrimaryLabel}
+              {session.role !== 'guest' && <UserCheck className="w-3.5 h-3.5 shrink-0" />}
+              <span className="sm:hidden">
+                {session.role === 'guest' ? 'دخول' : 'حسابي'}
+              </span>
+              <span className="hidden sm:inline">{headerPrimaryLabel}</span>
             </button>
 
             <button
@@ -1086,6 +1123,7 @@ export default function App() {
         ) : view === 'dashboard' ? (
           <ProgressDashboard
             studentName={session.studentName}
+            studentPhone={session.studentPhone}
             studentGrade={session.studentGrade}
             studentSpecialization={session.studentSpecialization}
             courses={allCourses}

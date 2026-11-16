@@ -596,6 +596,246 @@ async function startServer() {
     }
   });
 
+  // Sync a single student created during offline/localStorage fallback onto the server DB
+  app.post('/api/students/sync-local', async (req: Request, res: Response) => {
+    try {
+      const incomingId = String(req.body?.id ?? '').trim().slice(0, 100);
+      const studentName = String(req.body?.studentName ?? '').trim();
+      const studentPhone = normalizePhone(String(req.body?.studentPhone ?? ''));
+      const parentName = String(req.body?.parentName ?? '').trim();
+      const parentPhone = normalizePhone(String(req.body?.parentPhone ?? ''));
+      const motherName = String(req.body?.motherName ?? '').trim();
+      const stage = String(req.body?.stage ?? '').trim();
+      const specialization = String(req.body?.specialization ?? '').trim();
+
+      if (
+        !studentName ||
+        studentPhone.length < 8 ||
+        studentPhone === SUPERVISOR_PHONE ||
+        !parentName ||
+        parentPhone.length < 8 ||
+        !motherName ||
+        !stage ||
+        !specialization
+      ) {
+        res.status(400).json({ error: 'بيانات الطالب غير مكتملة للمزامنة.' });
+        return;
+      }
+
+      const students = await ensureDb();
+      const existingById = incomingId
+        ? students.find((s) => s.id === incomingId)
+        : undefined;
+      if (existingById) {
+        if (existingById.isBlocked) {
+          res.status(403).json({
+            error:
+              existingById.blockReason ||
+              'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.',
+          });
+          return;
+        }
+        const token = signToken({ role: 'student', sub: existingById.id });
+        res.json({ alreadyExists: true, student: sanitizeStudent(existingById), token });
+        return;
+      }
+
+      const existingByPhone = students.find((s) => s.studentPhone === studentPhone);
+      if (existingByPhone) {
+        res.status(409).json({
+          error: 'رقم الطالب مسجل بالفعل. يمكنك تسجيل الدخول مباشرة.',
+        });
+        return;
+      }
+
+      const deviceId = String(req.body?.deviceId ?? '').trim().slice(0, 100);
+      const ua = String(req.headers['user-agent'] ?? '');
+      const mergedDevices = applyStudentRequestDevice(
+        {
+          activeDeviceIds: Array.isArray(req.body?.activeDeviceIds)
+            ? (req.body.activeDeviceIds as unknown[]).map((d) => String(d)).filter(Boolean)
+            : [],
+          deviceDetails:
+            req.body?.deviceDetails && typeof req.body.deviceDetails === 'object'
+              ? (req.body.deviceDetails as Record<string, StudentDeviceInfo>)
+              : {},
+        },
+        deviceId,
+        req.body?.deviceInfo,
+        ua
+      );
+
+      const now = new Date().toISOString();
+      const specializationType = stage === 'البكالوريا' ? 'مسار' : 'شعبة';
+      const newId = incomingId && incomingId.startsWith('stu-') ? incomingId : `stu-${Date.now()}`;
+      const newStudent: StudentRecord = {
+        id: newId,
+        studentName,
+        studentPhone,
+        parentName,
+        parentPhone,
+        motherName,
+        stage,
+        specializationType,
+        specialization,
+        unlockedCourseIds: Array.isArray(req.body?.unlockedCourseIds)
+          ? (req.body.unlockedCourseIds as unknown[]).map((c) => String(c))
+          : [],
+        completedLessonIds: Array.isArray(req.body?.completedLessonIds)
+          ? (req.body.completedLessonIds as unknown[]).map((c) => String(c))
+          : [],
+        quizAnswers:
+          req.body?.quizAnswers && typeof req.body.quizAnswers === 'object'
+            ? (req.body.quizAnswers as Record<string, number>)
+            : {},
+        notesByLesson:
+          req.body?.notesByLesson && typeof req.body.notesByLesson === 'object'
+            ? (req.body.notesByLesson as Record<string, string>)
+            : {},
+        supervisorNotes: 'حساب جديد — في انتظار المراجعة الأولى.',
+        attendanceRate: Number(req.body?.attendanceRate) || 0,
+        attendanceDates:
+          req.body?.attendanceDates && typeof req.body.attendanceDates === 'object'
+            ? (req.body.attendanceDates as Record<string, string>)
+            : {},
+        walletBalance: 0,
+        isBlocked: false,
+        autoBlockExempt: false,
+        blockReason: '',
+        activeDeviceIds: mergedDevices.activeDeviceIds,
+        deviceDetails: mergedDevices.deviceDetails,
+        createdAt: typeof req.body?.createdAt === 'string' ? req.body.createdAt : now,
+        updatedAt: now,
+      };
+
+      students.unshift(newStudent);
+      await saveDb(students);
+      const token = signToken({ role: 'student', sub: newStudent.id });
+      res.status(201).json({ student: sanitizeStudent(newStudent), token });
+    } catch (err) {
+      console.error('Sync local student error:', err);
+      res.status(500).json({ error: 'تعذر مزامنة بيانات الطالب على الخادم.' });
+    }
+  });
+
+  // Supervisor: import any offline/localStorage fallback students idempotently
+  app.post(
+    '/api/supervisor/students/import-local',
+    requireSupervisor,
+    async (req: Request, res: Response) => {
+      try {
+        const incomingList: unknown[] = Array.isArray(req.body?.students)
+          ? req.body.students
+          : [];
+        const [students, catalog] = await Promise.all([ensureDb(), ensureCatalogDb()]);
+        const existingIds = new Set(students.map((s) => s.id));
+        const existingPhones = new Set(students.map((s) => s.studentPhone));
+        let importedCount = 0;
+
+        for (const item of incomingList) {
+          if (!item || typeof item !== 'object') continue;
+          const raw = item as Record<string, unknown>;
+          const id = String(raw.id ?? '').trim().slice(0, 100);
+          const studentName = String(raw.studentName ?? '').trim();
+          const studentPhone = normalizePhone(String(raw.studentPhone ?? ''));
+          const parentName = String(raw.parentName ?? '').trim();
+          const parentPhone = normalizePhone(String(raw.parentPhone ?? ''));
+          const motherName = String(raw.motherName ?? '').trim();
+          const stage = String(raw.stage ?? '').trim();
+          const specialization = String(raw.specialization ?? '').trim();
+
+          if (
+            !studentName ||
+            studentPhone.length < 8 ||
+            studentPhone === SUPERVISOR_PHONE ||
+            !parentName ||
+            parentPhone.length < 8 ||
+            !motherName ||
+            !stage ||
+            !specialization
+          ) {
+            continue;
+          }
+          if ((id && existingIds.has(id)) || existingPhones.has(studentPhone)) {
+            continue;
+          }
+
+          const now = new Date().toISOString();
+          const newId = id && id.startsWith('stu-') ? id : `stu-${Date.now()}-${importedCount}`;
+          const newRecord: StudentRecord = {
+            id: newId,
+            studentName,
+            studentPhone,
+            parentName,
+            parentPhone,
+            motherName,
+            stage,
+            specializationType: stage === 'البكالوريا' ? 'مسار' : 'شعبة',
+            specialization,
+            unlockedCourseIds: Array.isArray(raw.unlockedCourseIds)
+              ? (raw.unlockedCourseIds as unknown[]).map((c) => String(c))
+              : [],
+            completedLessonIds: Array.isArray(raw.completedLessonIds)
+              ? (raw.completedLessonIds as unknown[]).map((c) => String(c))
+              : [],
+            quizAnswers:
+              raw.quizAnswers && typeof raw.quizAnswers === 'object'
+                ? (raw.quizAnswers as Record<string, number>)
+                : {},
+            notesByLesson:
+              raw.notesByLesson && typeof raw.notesByLesson === 'object'
+                ? (raw.notesByLesson as Record<string, string>)
+                : {},
+            supervisorNotes:
+              typeof raw.supervisorNotes === 'string' && raw.supervisorNotes.trim()
+                ? raw.supervisorNotes
+                : 'حساب جديد — في انتظار المراجعة الأولى.',
+            attendanceRate: Number(raw.attendanceRate) || 0,
+            attendanceDates:
+              raw.attendanceDates && typeof raw.attendanceDates === 'object'
+                ? (raw.attendanceDates as Record<string, string>)
+                : {},
+            walletBalance: Math.max(0, Number(raw.walletBalance) || 0),
+            isBlocked: Boolean(raw.isBlocked),
+            autoBlockExempt: Boolean(raw.autoBlockExempt),
+            blockReason: typeof raw.blockReason === 'string' ? raw.blockReason : '',
+            activeDeviceIds: Array.isArray(raw.activeDeviceIds)
+              ? (raw.activeDeviceIds as unknown[]).map((d) => String(d))
+              : [],
+            deviceDetails:
+              raw.deviceDetails && typeof raw.deviceDetails === 'object'
+                ? (raw.deviceDetails as Record<string, StudentDeviceInfo>)
+                : {},
+            createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : now,
+            updatedAt: now,
+          };
+
+          students.unshift(newRecord);
+          existingIds.add(newRecord.id);
+          existingPhones.add(newRecord.studentPhone);
+          importedCount += 1;
+        }
+
+        if (importedCount > 0) {
+          await saveDb(students);
+        }
+
+        const mergedCourses = getMergedCourses(catalog);
+        const computed = students.map((stu) => {
+          const auto = computeStudentAttendance(stu, mergedCourses);
+          return sanitizeStudent({
+            ...stu,
+            attendanceRate: auto.rate,
+          });
+        });
+        res.json({ importedCount, students: computed });
+      } catch (err) {
+        console.error('Import local students error:', err);
+        res.status(500).json({ error: 'تعذر استيراد بيانات الطلاب المحليين.' });
+      }
+    }
+  );
+
   // Sync student learning progress
   app.patch('/api/students/:id/progress', async (req: Request, res: Response) => {
     try {

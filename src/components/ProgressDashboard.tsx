@@ -16,6 +16,7 @@ import {
 
 interface ProgressDashboardProps {
   studentName: string;
+  studentPhone?: string;
   studentGrade: string;
   studentSpecialization?: string;
   courses?: Course[];
@@ -34,6 +35,7 @@ interface ProgressDashboardProps {
 
 export function ProgressDashboard({
   studentName,
+  studentPhone,
   studentGrade,
   studentSpecialization,
   courses,
@@ -98,6 +100,15 @@ export function ProgressDashboard({
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-10">
       <div className="flex flex-wrap items-end justify-between gap-6 pb-8 border-b border-slate-200 dark:border-slate-800">
         <div>
+          <div className="inline-flex flex-wrap items-center gap-2 text-xs font-semibold text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 px-3 py-1 rounded-lg mb-2">
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400 shrink-0" />
+            <span>مسجّل الدخول: {studentName}</span>
+            {studentPhone && (
+              <span className="font-mono tabular-nums text-emerald-700 dark:text-emerald-400" dir="ltr">
+                ({studentPhone})
+              </span>
+            )}
+          </div>
           <div className="text-xs font-medium text-blue-700 dark:text-blue-400 mb-1">
             {studentGrade}
             {studentSpecialization ? ` · ${studentSpecialization}` : ''}
@@ -234,7 +245,18 @@ export function ProgressDashboard({
         <h2 className="text-lg font-bold text-slate-900 dark:text-white">
           كورسات {studentGrade}
         </h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {visibleCourses.length === 0 ? (
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-8 text-center space-y-2">
+            <BookOpen className="w-8 h-8 text-blue-700 dark:text-blue-400 mx-auto" />
+            <div className="text-sm font-bold text-slate-900 dark:text-white">
+              حسابك مسجّل ومفعّل بنجاح في {studentGrade}
+            </div>
+            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 max-w-lg mx-auto">
+              لا توجد كورسات منشورة لهذه المرحلة على المنصة حاليًا. فور إضافة الكورسات من قِبل الإدارة ستظهر هنا مباشرة.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {visibleCourses.map((course) => {
             const lessons = getCourseAllLessons(course);
             const doneCount = lessons.filter((l) => completedLessonIds.includes(l.id)).length;
@@ -298,7 +320,8 @@ export function ProgressDashboard({
               </div>
             );
           })}
-        </div>
+          </div>
+        )}
       </section>
 
       <section className="space-y-4">

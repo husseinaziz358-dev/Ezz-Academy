@@ -7,7 +7,7 @@ import {
   SECONDARY_BRANCHES,
   StudentRecord,
 } from '../types/student';
-import { apiLogin, apiRegisterStudent } from '../utils/apiClient';
+import { apiLogin, apiRegisterStudent, normalizeDigits } from '../utils/apiClient';
 
 interface StudentAuthModalProps {
   onStudentAuthenticated: (student: StudentRecord, token: string) => void;
@@ -56,6 +56,10 @@ export function StudentAuthModal({
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
+    if (!normalizeDigits(loginPhone) || !loginPassword) {
+      setErrorMsg('يرجى إدخال رقم الهاتف وكلمة المرور.');
+      return;
+    }
     setLoading(true);
     try {
       const result = await apiLogin(loginPhone, loginPassword);
@@ -84,14 +88,30 @@ export function StudentAuthModal({
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
+
+    const normStudentPhone = normalizeDigits(studentPhone);
+    const normParentPhone = normalizeDigits(parentPhone);
+    if (!studentName.trim() || !parentName.trim() || !motherName.trim()) {
+      setErrorMsg('يرجى إدخال اسم الطالب واسم ولي الأمر واسم الأم.');
+      return;
+    }
+    if (normStudentPhone.length < 8 || normParentPhone.length < 8) {
+      setErrorMsg('يرجى إدخال رقم هاتف صحيح للطالب وولي الأمر (٨ أرقام على الأقل).');
+      return;
+    }
+    if (registerPassword.length < 4) {
+      setErrorMsg('يجب أن تكون كلمة المرور ٤ أحرف على الأقل.');
+      return;
+    }
+
     setLoading(true);
     try {
       const result = await apiRegisterStudent({
-        studentName,
-        studentPhone,
-        parentName,
-        parentPhone,
-        motherName,
+        studentName: studentName.trim(),
+        studentPhone: normStudentPhone,
+        parentName: parentName.trim(),
+        parentPhone: normParentPhone,
+        motherName: motherName.trim(),
         stage,
         specialization,
         password: registerPassword,
@@ -170,8 +190,23 @@ export function StudentAuthModal({
         </div>
 
         {errorMsg && (
-          <div className="p-3 text-xs font-medium text-red-900 dark:text-red-200 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 rounded-lg">
-            {errorMsg}
+          <div className="p-3 text-xs font-medium text-red-900 dark:text-red-200 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 rounded-lg space-y-1.5">
+            <div>{errorMsg}</div>
+            {activeTab === 'login' && errorMsg.includes('غير صحيحة') && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (loginPhone.trim() && !studentPhone) {
+                    setStudentPhone(loginPhone.trim());
+                  }
+                  setActiveTab('register');
+                  setErrorMsg('');
+                }}
+                className="font-bold text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
+              >
+                ليس لديك حساب مسجّل؟ اضغط هنا لإنشاء حساب طالب جديد
+              </button>
+            )}
           </div>
         )}
 
