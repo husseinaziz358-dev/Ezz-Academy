@@ -1859,6 +1859,9 @@ export function SupervisorDashboard({
                   }}
                   className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 >
+                  {teachers.length === 0 && INSTRUCTORS.length === 0 && (
+                    <option value="">أضف مدرسًا أولًا من تبويب إدارة المدرسين</option>
+                  )}
                   {teachers.length > 0 && (
                     <optgroup label="المدرسون المضافون">
                       {teachers.map((t) => (
@@ -1868,13 +1871,15 @@ export function SupervisorDashboard({
                       ))}
                     </optgroup>
                   )}
-                  <optgroup label="المدرسون الأساسيون">
-                    {INSTRUCTORS.map((inst) => (
-                      <option key={inst.id} value={inst.id}>
-                        {inst.name}
-                      </option>
-                    ))}
-                  </optgroup>
+                  {INSTRUCTORS.length > 0 && (
+                    <optgroup label="المدرسون الأساسيون">
+                      {INSTRUCTORS.map((inst) => (
+                        <option key={inst.id} value={inst.id}>
+                          {inst.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
               </div>
 

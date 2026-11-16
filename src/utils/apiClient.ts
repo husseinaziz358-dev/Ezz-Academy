@@ -419,7 +419,7 @@ export async function apiRegisterStudent(payload: {
     specializationType: payload.stage === 'البكالوريا' ? 'مسار' : 'شعبة',
     specialization: payload.specialization,
     passwordHash,
-    unlockedCourseIds: ['course-sec3-pure-applied', 'course-sec1-math'],
+    unlockedCourseIds: [],
     completedLessonIds: [],
     quizAnswers: {},
     notesByLesson: {},
@@ -855,6 +855,7 @@ interface LocalCatalog {
   teachers: DynamicTeacher[];
   customCourses: Course[];
   deletedCourseIds: string[];
+  heroImage?: string;
 }
 
 function getLocalCatalog(): LocalCatalog {
@@ -868,12 +869,13 @@ function getLocalCatalog(): LocalCatalog {
         deletedCourseIds: Array.isArray(parsed.deletedCourseIds)
           ? parsed.deletedCourseIds
           : [],
+        heroImage: typeof parsed.heroImage === 'string' ? parsed.heroImage : '',
       };
     }
   } catch {
     // Ignore storage read error
   }
-  return { teachers: [], customCourses: [], deletedCourseIds: [] };
+  return { teachers: [], customCourses: [], deletedCourseIds: [], heroImage: '' };
 }
 
 function saveLocalCatalog(catalog: LocalCatalog) {
@@ -895,6 +897,7 @@ export async function apiFetchAcademyCatalog(): Promise<LocalCatalog> {
       deletedCourseIds: Array.isArray(serverRes.data.deletedCourseIds)
         ? serverRes.data.deletedCourseIds
         : [],
+      heroImage: typeof serverRes.data.heroImage === 'string' ? serverRes.data.heroImage : '',
     };
   }
   return getLocalCatalog();
@@ -1193,4 +1196,39 @@ export async function apiDeleteCoursesBatch(
   }
   saveLocalCatalog(catalog);
   return { ok: true };
+}
+
+export async function apiUpdateHeroImage(
+  token: string,
+  heroImage: string
+): Promise<{ ok: true; heroImage: string } | { ok: false; error: string }> {
+  const cleanHero = heroImage.trim();
+  const serverRes = await tryServerJson<{ ok?: boolean; heroImage?: string; error?: string }>(
+    '/api/supervisor/hero-image',
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ heroImage: cleanHero }),
+    }
+  );
+  if (serverRes) {
+    if (!serverRes.ok) {
+      return {
+        ok: false,
+        error: serverRes.data.error || 'تعذر حفظ صورة الصفحة الرئيسية.',
+      };
+    }
+    return {
+      ok: true,
+      heroImage: typeof serverRes.data.heroImage === 'string' ? serverRes.data.heroImage : cleanHero,
+    };
+  }
+
+  const catalog = getLocalCatalog();
+  catalog.heroImage = cleanHero;
+  saveLocalCatalog(catalog);
+  return { ok: true, heroImage: cleanHero };
 }

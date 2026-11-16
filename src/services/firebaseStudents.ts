@@ -76,7 +76,7 @@ function mapFirestoreToStudentRecord(
     specialization: String(profileData.specialization ?? ''),
     unlockedCourseIds: Array.isArray(profileData.unlockedCourseIds)
       ? (profileData.unlockedCourseIds as string[])
-      : ['course-sec3-pure-applied', 'course-sec1-math'],
+      : [],
     completedLessonIds: Array.isArray(profileData.completedLessonIds)
       ? (profileData.completedLessonIds as string[])
       : [],
@@ -304,7 +304,7 @@ export async function createFirebaseStudentProfile(
     };
   }
 
-  const unlockedCourseIds = ['course-sec3-pure-applied', 'course-sec1-math'];
+  const unlockedCourseIds: string[] = [];
   const supervisorNotes = 'حساب جديد — في انتظار المراجعة الأولى.';
   const deviceId = getOrCreateDeviceId();
   const deviceInfo = getClientDeviceInfo(deviceId);

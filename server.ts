@@ -284,6 +284,7 @@ interface AcademyCatalogDb {
   teachers: DynamicTeacherRecord[];
   customCourses: CustomCourseRecord[];
   deletedCourseIds: string[];
+  heroImage?: string;
 }
 
 async function ensureCatalogDb(): Promise<AcademyCatalogDb> {
@@ -295,9 +296,15 @@ async function ensureCatalogDb(): Promise<AcademyCatalogDb> {
       teachers: Array.isArray(parsed.teachers) ? parsed.teachers : [],
       customCourses: Array.isArray(parsed.customCourses) ? parsed.customCourses : [],
       deletedCourseIds: Array.isArray(parsed.deletedCourseIds) ? parsed.deletedCourseIds : [],
+      heroImage: typeof parsed.heroImage === 'string' ? parsed.heroImage : '',
     };
   } catch {
-    const empty: AcademyCatalogDb = { teachers: [], customCourses: [], deletedCourseIds: [] };
+    const empty: AcademyCatalogDb = {
+      teachers: [],
+      customCourses: [],
+      deletedCourseIds: [],
+      heroImage: '',
+    };
     await fs.writeFile(CATALOG_FILE, JSON.stringify(empty, null, 2), 'utf-8');
     return empty;
   }
@@ -561,7 +568,7 @@ async function startServer() {
         specializationType,
         specialization,
         passwordHash: hashStudentPassword(password),
-        unlockedCourseIds: ['course-sec3-pure-applied', 'course-sec1-math'],
+        unlockedCourseIds: [],
         completedLessonIds: [],
         quizAnswers: {},
         notesByLesson: {},
@@ -1389,6 +1396,28 @@ async function startServer() {
       } catch (err) {
         console.error('Delete course error:', err);
         res.status(500).json({ error: 'تعذر حذف الكورس.' });
+      }
+    }
+  );
+
+  app.put(
+    '/api/supervisor/hero-image',
+    requireSupervisor,
+    async (req: Request, res: Response) => {
+      try {
+        const rawHeroImage =
+          typeof req.body?.heroImage === 'string' ? req.body.heroImage.trim() : '';
+        if (rawHeroImage.length > 2_000_000) {
+          res.status(400).json({ error: 'حجم رابط أو بيانات الصورة كبير جدًا.' });
+          return;
+        }
+        const catalog = await ensureCatalogDb();
+        catalog.heroImage = rawHeroImage;
+        await saveCatalogDb(catalog);
+        res.json({ ok: true, heroImage: catalog.heroImage });
+      } catch (err) {
+        console.error('Update hero image error:', err);
+        res.status(500).json({ error: 'تعذر تحديث صورة الصفحة الرئيسية.' });
       }
     }
   );

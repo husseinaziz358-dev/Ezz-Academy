@@ -13,12 +13,16 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  ImagePlus,
   Lock,
   Menu,
   Moon,
   Plus,
+  RotateCcw,
+  Save,
   Search,
   Sun,
+  Upload,
   Wallet,
   X,
 } from 'lucide-react';
@@ -53,6 +57,8 @@ import {
   apiMarkStudentNotificationsRead,
   apiPurchaseCourseWithWallet,
   apiSyncStudentProgress,
+  apiUpdateHeroImage,
+  apiUploadMediaFile,
   getOrCreateDeviceId,
   mergeCatalogCourses,
 } from './utils/apiClient';
@@ -110,7 +116,7 @@ const DEFAULT_SESSION: SessionState = {
   studentSpecialization: 'علمي رياضة',
   supervisorName: '',
   supervisorPhone: '',
-  unlockedCourseIds: ['course-sec3-pure-applied', 'course-sec1-math'],
+  unlockedCourseIds: [],
   completedLessonIds: [],
   attendanceDates: {},
   notesByLesson: {},
@@ -135,7 +141,7 @@ const GRADE_FILTERS: ('كل المراحل' | GradeStage)[] = [
 export default function App() {
   const [view, setView] = useState<AppView>('home');
   const [adminTab, setAdminTab] = useState<AdminTab>('students');
-  const [activeCourseId, setActiveCourseId] = useState<string>(COURSES[0].id);
+  const [activeCourseId, setActiveCourseId] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedGrade, setSelectedGrade] = useState<'كل المراحل' | GradeStage>('كل المراحل');
   const [selectedCategory, setSelectedCategory] = useState<'الكل' | PlatformSubject>('الكل');
@@ -163,6 +169,12 @@ export default function App() {
   const [teachers, setTeachers] = useState<DynamicTeacher[]>([]);
   const [customCourses, setCustomCourses] = useState<Course[]>([]);
   const [deletedCourseIds, setDeletedCourseIds] = useState<string[]>([]);
+  const [heroImage, setHeroImage] = useState<string>('');
+  const [showHeroEditorModal, setShowHeroEditorModal] = useState<boolean>(false);
+  const [heroImageDraft, setHeroImageDraft] = useState<string>('');
+  const [heroUploading, setHeroUploading] = useState<boolean>(false);
+  const [heroSaving, setHeroSaving] = useState<boolean>(false);
+  const [heroEditorError, setHeroEditorError] = useState<string>('');
   const teachersScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -228,6 +240,47 @@ export default function App() {
     setTeachers(catalog.teachers);
     setCustomCourses(catalog.customCourses);
     setDeletedCourseIds(catalog.deletedCourseIds);
+    setHeroImage(catalog.heroImage || '');
+  };
+
+  const openHeroEditor = () => {
+    setHeroImageDraft(heroImage || '');
+    setHeroEditorError('');
+    setShowHeroEditorModal(true);
+  };
+
+  const handleHeroImageFileUpload = async (file: File | undefined) => {
+    if (!file || session.role !== 'supervisor') return;
+    setHeroUploading(true);
+    setHeroEditorError('');
+    try {
+      const res = await apiUploadMediaFile(session.token, file);
+      if (!res.ok) {
+        setHeroEditorError(res.error);
+        return;
+      }
+      setHeroImageDraft(res.url);
+    } finally {
+      setHeroUploading(false);
+    }
+  };
+
+  const handleSaveHeroImage = async (overrideImage?: string) => {
+    if (session.role !== 'supervisor' || heroSaving) return;
+    const nextValue = typeof overrideImage === 'string' ? overrideImage : heroImageDraft;
+    setHeroSaving(true);
+    setHeroEditorError('');
+    try {
+      const res = await apiUpdateHeroImage(session.token, nextValue);
+      if (!res.ok) {
+        setHeroEditorError(res.error);
+        return;
+      }
+      setHeroImage(res.heroImage);
+      setShowHeroEditorModal(false);
+    } finally {
+      setHeroSaving(false);
+    }
   };
 
   useEffect(() => {
@@ -397,8 +450,8 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.role, session.studentId, session.token]);
 
-  const activeCourse: Course =
-    allCourses.find((c) => c.id === activeCourseId) ?? allCourses[0] ?? COURSES[0];
+  const activeCourse: Course | undefined =
+    allCourses.find((c) => c.id === activeCourseId) ?? allCourses[0];
 
   const isStudentLoggedIn = session.role === 'student';
 
@@ -1003,7 +1056,7 @@ export default function App() {
             onCatalogUpdated={loadCatalog}
             onLogout={handleLogout}
           />
-        ) : view === 'classroom' ? (
+        ) : view === 'classroom' && activeCourse ? (
           <ClassroomView
             course={activeCourse}
             instructorName={resolveInstructorName(activeCourse.instructorId)}
@@ -1333,25 +1386,45 @@ export default function App() {
                 <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 p-10 text-center space-y-3">
                   <BookOpen className="w-8 h-8 text-slate-400 mx-auto" />
                   <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                    لا توجد كورسات مضافة لهذه المرحلة حاليًا
+                    {allCourses.length === 0
+                      ? 'لا توجد كورسات مضافة على المنصة حاليًا'
+                      : 'لا توجد كورسات مضافة لهذه المرحلة حاليًا'}
                   </h3>
                   <p className="text-sm text-slate-600 dark:text-slate-400">
-                    {isStudentLoggedIn
-                      ? `لم يتم نشر كورسات إضافية لـ ${session.studentGrade} بهذه التصفية بعد.`
-                      : 'جرّب تغيير المدرس أو المرحلة الدراسية أو إعادة تعيين الفلاتر.'}
+                    {allCourses.length === 0
+                      ? session.role === 'supervisor'
+                        ? 'يمكنك إضافة المدرسين والكورسات من لوحة المشرف لتظهر هنا فورًا للطلاب.'
+                        : 'سيتم عرض الكورسات هنا فور إضافتها من قِبل إدارة المنصة.'
+                      : isStudentLoggedIn
+                        ? `لم يتم نشر كورسات إضافية لـ ${session.studentGrade} بهذه التصفية بعد.`
+                        : 'جرّب تغيير المدرس أو المرحلة الدراسية أو إعادة تعيين الفلاتر.'}
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSearchQuery('');
-                      setSelectedCategory('الكل');
-                      setSelectedGrade('كل المراحل');
-                      setSelectedInstructorId('الكل');
-                    }}
-                    className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors"
-                  >
-                    إعادة تعيين التصفية
-                  </button>
+                  {allCourses.length === 0 && session.role === 'supervisor' ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAdminTab('courses');
+                        navigateTo('supervisor');
+                      }}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>إضافة كورس جديد</span>
+                    </button>
+                  ) : allCourses.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery('');
+                        setSelectedCategory('الكل');
+                        setSelectedGrade('كل المراحل');
+                        setSelectedInstructorId('الكل');
+                      }}
+                      className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors cursor-pointer"
+                    >
+                      إعادة تعيين التصفية
+                    </button>
+                  ) : null}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-stretch">
@@ -1519,13 +1592,36 @@ export default function App() {
                   </div>
 
                   <div className="lg:col-span-6">
-                    <div className="h-full min-h-[280px] lg:min-h-[380px] rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900">
+                    <div className="relative h-full min-h-[280px] lg:min-h-[380px] rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900">
                       <ResilientImage
-                        src={HERO_IMAGE}
+                        src={heroImage || HERO_IMAGE}
                         alt="قاعة دراسة حديثة لمنصة Ezz Academy"
                         fallbackTitle="Ezz Academy"
                         className="w-full h-full object-cover"
                       />
+                      {session.role === 'supervisor' && (
+                        <div className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center justify-end gap-2">
+                          {heroImage && (
+                            <button
+                              type="button"
+                              disabled={heroSaving}
+                              onClick={() => void handleSaveHeroImage('')}
+                              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-900 dark:text-white bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-700 rounded-lg shadow-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              <span>استعادة الافتراضية</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={openHeroEditor}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-700/95 hover:bg-blue-800 border border-blue-600 rounded-lg shadow-md transition-colors cursor-pointer"
+                          >
+                            <ImagePlus className="w-4 h-4" />
+                            <span>تعديل الصورة</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1916,6 +2012,137 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showHeroEditorModal && session.role === 'supervisor' && (
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/75 p-3 sm:p-4 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="hero-image-editor-title"
+        >
+          <div className="min-h-full flex items-center justify-center py-4">
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-5">
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 shrink-0">
+                    <ImagePlus className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3
+                      id="hero-image-editor-title"
+                      className="text-base sm:text-lg font-bold text-slate-900 dark:text-white"
+                    >
+                      تعديل صورة الصفحة الرئيسية
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      ارفع صورة جديدة من جهازك أو أدخل رابط الصورة ثم اضغط حفظ التغييرات.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowHeroEditorModal(false)}
+                  aria-label="إغلاق"
+                  className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="aspect-[16/10] w-full rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800">
+                <ResilientImage
+                  src={heroImageDraft || HERO_IMAGE}
+                  alt="معاينة صورة الصفحة الرئيسية"
+                  fallbackTitle="Ezz Academy"
+                  className="w-full h-full object-cover"
+                />
+              </div>
+
+              <div className="space-y-3">
+                <label className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-100 bg-slate-50 dark:bg-slate-800/80 border border-dashed border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors">
+                  <Upload className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                  <span>
+                    {heroUploading
+                      ? 'جاري رفع الصورة...'
+                      : 'رفع صورة من الجهاز'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={heroUploading || heroSaving}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = '';
+                      void handleHeroImageFileUpload(file);
+                    }}
+                  />
+                </label>
+
+                <div>
+                  <label
+                    htmlFor="hero-image-url-input"
+                    className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
+                  >
+                    أو رابط الصورة المباشر
+                  </label>
+                  <input
+                    id="hero-image-url-input"
+                    type="text"
+                    dir="ltr"
+                    value={heroImageDraft}
+                    onChange={(e) => setHeroImageDraft(e.target.value)}
+                    placeholder="https://example.com/image.jpg"
+                    className="w-full px-3.5 py-2 text-xs sm:text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  />
+                </div>
+              </div>
+
+              {heroEditorError && (
+                <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-xs font-semibold text-red-800 dark:text-red-200">
+                  {heroEditorError}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                {heroImageDraft ? (
+                  <button
+                    type="button"
+                    disabled={heroUploading || heroSaving}
+                    onClick={() => setHeroImageDraft('')}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>استعادة الصورة الافتراضية</span>
+                  </button>
+                ) : (
+                  <span />
+                )}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={heroSaving}
+                    onClick={() => setShowHeroEditorModal(false)}
+                    className="px-4 py-2 text-xs sm:text-sm font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="button"
+                    disabled={heroUploading || heroSaving}
+                    onClick={() => void handleSaveHeroImage()}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors disabled:opacity-60 cursor-pointer"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{heroSaving ? 'جاري الحفظ...' : 'حفظ التغييرات'}</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
