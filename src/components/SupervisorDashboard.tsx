@@ -294,6 +294,45 @@ export function SupervisorDashboard({
   const [teacherSaving, setTeacherSaving] = useState(false);
   const [teacherFeedback, setTeacherFeedback] = useState('');
 
+  // Teacher edit modal state
+  const [editingTeacher, setEditingTeacher] = useState<DynamicTeacher | null>(null);
+  const [editTeacherName, setEditTeacherName] = useState('');
+  const [editTeacherSubject, setEditTeacherSubject] = useState<string>(PLATFORM_SUBJECTS[0]);
+  const [editTeacherImage, setEditTeacherImage] = useState('');
+  const [editTeacherTelegram, setEditTeacherTelegram] = useState('');
+  const [editTeacherGrades, setEditTeacherGrades] = useState<EducationalStage[]>(['الصف الثالث الثانوي']);
+  const [editTeacherSaving, setEditTeacherSaving] = useState(false);
+  const [editTeacherFeedback, setEditTeacherFeedback] = useState('');
+
+  const handleSaveTeacherEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTeacher) return;
+    setEditTeacherSaving(true);
+    setEditTeacherFeedback('');
+    try {
+      const res = await apiUpdateTeacher(token, editingTeacher.id, {
+        name: editTeacherName,
+        subject: editTeacherSubject,
+        image: editTeacherImage,
+        telegramSupport: editTeacherTelegram,
+        grades: editTeacherGrades,
+      });
+      if (!res.ok) {
+        setEditTeacherFeedback(res.error);
+      } else {
+        setEditTeacherFeedback('تم حفظ تعديلات المدرس بنجاح.');
+        await onCatalogUpdated();
+        setTimeout(() => {
+          setEditingTeacher(null);
+        }, 800);
+      }
+    } catch {
+      setEditTeacherFeedback('حدث خطأ أثناء حفظ تعديلات المدرس.');
+    } finally {
+      setEditTeacherSaving(false);
+    }
+  };
+
   // Course creation form state
   const [courseTitle, setCourseTitle] = useState('');
   const [courseGrade, setCourseGrade] =
@@ -2046,6 +2085,22 @@ export function SupervisorDashboard({
                         >
                           <Plus className="w-3.5 h-3.5" />
                           <span>إضافة كورس له</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingTeacher(t);
+                            setEditTeacherName(t.name);
+                            setEditTeacherSubject(normalizeSubjectCategory(t.subject) || PLATFORM_SUBJECTS[0]);
+                            setEditTeacherImage(t.image);
+                            setEditTeacherTelegram(t.telegramSupport || '');
+                            setEditTeacherGrades(t.grades?.length ? [...t.grades] : ['الصف الثالث الثانوي']);
+                            setEditTeacherFeedback('');
+                          }}
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/60 transition-colors cursor-pointer"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>تعديل</span>
                         </button>
                         <button
                           type="button"
@@ -4824,6 +4879,164 @@ export function SupervisorDashboard({
                   >
                     <Send className="w-4 h-4" />
                     <span>{alertSending ? 'جاري الإرسال...' : 'إرسال التنبيه الآن'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingTeacher && (
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 p-3 sm:p-4 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-teacher-modal-title"
+        >
+          <div className="min-h-full flex items-center justify-center py-4">
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-5">
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/50 text-blue-700 shrink-0">
+                    <Edit3 className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3
+                      id="edit-teacher-modal-title"
+                      className="text-base sm:text-lg font-bold text-slate-900 dark:text-white"
+                    >
+                      تعديل بيانات المدرس: {editingTeacher.name}
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      تحديث اسم المدرس، مادته، صورته، تليجرام الدعم، والمراحل.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingTeacher(null)}
+                  aria-label="إغلاق"
+                  className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveTeacherEdit} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    اسم المدرس
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editTeacherName}
+                    onChange={(e) => setEditTeacherName(e.target.value)}
+                    className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    المادة الدراسية
+                  </label>
+                  <select
+                    value={editTeacherSubject}
+                    onChange={(e) => setEditTeacherSubject(e.target.value)}
+                    className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  >
+                    {PLATFORM_SUBJECTS.map((subj) => (
+                      <option key={subj} value={subj}>
+                        {subj}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    رابط أو صورة المدرس
+                  </label>
+                  <input
+                    type="url"
+                    dir="ltr"
+                    value={editTeacherImage}
+                    onChange={(e) => setEditTeacherImage(e.target.value)}
+                    placeholder="https://..."
+                    className="w-full px-3.5 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
+                  />
+                  {editTeacherImage && (
+                    <div className="mt-2 w-20 h-20 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800">
+                      <img src={editTeacherImage} alt="معاينة" className="w-full h-full object-cover object-top" />
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    تليجرام الدعم العلمي للمدرس
+                  </label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={editTeacherTelegram}
+                    onChange={(e) => setEditTeacherTelegram(e.target.value)}
+                    placeholder="01012345678 أو @username"
+                    className="w-full px-3.5 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-lg"
+                  />
+                </div>
+
+                <div>
+                  <span className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2">
+                    المراحل الدراسية
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {EDUCATIONAL_STAGES.map((stage) => {
+                      const selected = editTeacherGrades.includes(stage);
+                      return (
+                        <button
+                          key={stage}
+                          type="button"
+                          onClick={() => {
+                            setEditTeacherGrades((prev) =>
+                              selected ? prev.filter((s) => s !== stage) : [...prev, stage]
+                            );
+                          }}
+                          className={`px-3 py-2 text-xs rounded-lg border text-right transition-colors cursor-pointer ${
+                            selected
+                              ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-300 dark:border-blue-700 text-blue-900 dark:text-blue-200 font-semibold'
+                              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400'
+                          }`}
+                        >
+                          {stage}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {editTeacherFeedback && (
+                  <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-xs font-medium text-blue-900 dark:text-blue-200">
+                    {editTeacherFeedback}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center justify-end gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingTeacher(null)}
+                    className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700"
+                  >
+                    إغلاق
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={editTeacherSaving}
+                    className="inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{editTeacherSaving ? 'جاري الحفظ...' : 'حفظ التعديلات'}</span>
                   </button>
                 </div>
               </form>

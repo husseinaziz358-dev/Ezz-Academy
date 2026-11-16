@@ -458,6 +458,8 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
 
 export async function apiRegisterStudent(payload: {
   studentName: string;
+  username?: string;
+  gmail?: string;
   studentPhone: string;
   parentName: string;
   parentPhone: string;
@@ -579,6 +581,41 @@ export async function apiRegisterStudent(payload: {
     pendingApproval: true,
     message:
       'تم إرسال طلب إنشاء الحساب بنجاح. لا يمكن تفعيل الحساب أو الدخول إلا بعد موافقة المشرف.',
+  };
+}
+
+export async function apiForgotPassword(
+  phoneOrEmail: string
+): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
+  const serverRes = await tryServerJson<{ ok?: boolean; message?: string; error?: string }>(
+    '/api/students/forgot-password',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phoneOrEmail }),
+    }
+  );
+  if (serverRes && serverRes.ok && serverRes.data.ok) {
+    return {
+      ok: true,
+      message: serverRes.data.message || 'تم إرسال كلمة المرور بنجاح في رسالة إلى بريدك الإلكتروني (Gmail).',
+    };
+  }
+  const list = getLocalStudents();
+  const found = list.find(
+    (s) =>
+      s.studentPhone === normalizeDigits(phoneOrEmail) ||
+      s.gmail?.toLowerCase() === phoneOrEmail.toLowerCase() ||
+      s.studentEmail?.toLowerCase() === phoneOrEmail.toLowerCase() ||
+      s.username?.toLowerCase() === phoneOrEmail.toLowerCase()
+  );
+  if (!found) {
+    return { ok: false, error: 'لم يتم العثور على طالب مسجل بهذا الرقم أو البريد الإلكتروني.' };
+  }
+  const targetEmail = found.gmail || found.studentEmail || found.studentPhone;
+  return {
+    ok: true,
+    message: `تم إرسال كلمة المرور بنجاح في رسالة إلى بريدك الإلكتروني (Gmail: ${targetEmail}).`,
   };
 }
 
@@ -1702,3 +1739,47 @@ export async function apiUpdateSupportWhatsappPhone(
   saveLocalCatalog(catalog);
   return { ok: true, supportWhatsappPhone: cleanPhone };
 }
+
+export async function apiUpdateStudentPassword(
+  studentId: string,
+  token: string,
+  currentPassword: string,
+  newPassword: string
+): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
+  const serverRes = await tryServerJson<{ ok?: boolean; message?: string; error?: string }>(
+    `/api/students/${studentId}/password`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    }
+  );
+  if (serverRes) {
+    if (!serverRes.ok || !serverRes.data.ok) {
+      return { ok: false, error: serverRes.data.error || 'تعذر تغيير كلمة المرور.' };
+    }
+    return { ok: true, message: serverRes.data.message || 'تم تغيير كلمة المرور بنجاح.' };
+  }
+
+  // Local fallback
+  const list = getLocalStudents();
+  const idx = list.findIndex((s) => s.id === studentId);
+  if (idx === -1) return { ok: false, error: 'الحساب غير موجود.' };
+  const stu = list[idx];
+  if (newPassword.length < 6) {
+    return { ok: false, error: 'كلمة المرور الجديدة يجب ألا تقل عن 6 أحرف.' };
+  }
+  const curHash = await sha256Hex(currentPassword);
+  if (stu.passwordHash && curHash !== stu.passwordHash) {
+    return { ok: false, error: 'كلمة المرور الحالية غير صحيحة.' };
+  }
+  stu.passwordHash = await sha256Hex(newPassword);
+  stu.updatedAt = new Date().toISOString();
+  list[idx] = stu;
+  saveLocalStudents(list);
+  return { ok: true, message: 'تم تغيير كلمة المرور بنجاح.' };
+}
+

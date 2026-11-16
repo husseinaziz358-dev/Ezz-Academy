@@ -5,6 +5,7 @@ import {
   Camera,
   CheckCircle2,
   FileText,
+  Lock,
   MonitorSmartphone,
   Trash2,
   User,
@@ -40,6 +41,7 @@ interface ProgressDashboardProps {
   unlockedCourseIds: string[];
   onUpdateStudentName: (name: string) => void;
   onUpdateStudentAvatar?: (avatarUrl: string) => void;
+  onChangePassword?: (currentPass: string, newPass: string) => Promise<{ ok: true; message: string } | { ok: false; error: string }>;
   completedLessonIds: string[];
   attendanceDates?: Record<string, string>;
   notesByLesson: Record<string, string>;
@@ -97,6 +99,7 @@ export function ProgressDashboard({
   unlockedCourseIds,
   onUpdateStudentName,
   onUpdateStudentAvatar,
+  onChangePassword,
   completedLessonIds,
   attendanceDates = {},
   notesByLesson,
@@ -115,6 +118,42 @@ export function ProgressDashboard({
     submittedAt: string;
   } | null>(null);
   const [profileSavedMsg, setProfileSavedMsg] = useState<string | null>(null);
+
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [passwordChangeMsg, setPasswordChangeMsg] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
+  const [passwordChanging, setPasswordChanging] = useState(false);
+
+  const handlePasswordChangeSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onChangePassword) return;
+    if (newPassword !== confirmNewPassword) {
+      setPasswordChangeMsg({ type: 'error', text: 'كلمة المرور الجديدة غير مطابقة لتأكيد كلمة المرور.' });
+      return;
+    }
+    if (newPassword.length < 6) {
+      setPasswordChangeMsg({ type: 'error', text: 'كلمة المرور الجديدة يجب ألا تقل عن 6 أحرف.' });
+      return;
+    }
+    setPasswordChanging(true);
+    setPasswordChangeMsg(null);
+    try {
+      const res = await onChangePassword(currentPassword, newPassword);
+      if (!res.ok) {
+        setPasswordChangeMsg({ type: 'error', text: res.error });
+      } else {
+        setPasswordChangeMsg({ type: 'ok', text: 'تم تغيير كلمة المرور بنجاح.' });
+        setCurrentPassword('');
+        setNewPassword('');
+        setConfirmNewPassword('');
+      }
+    } catch {
+      setPasswordChangeMsg({ type: 'error', text: 'حدث خطأ أثناء تغيير كلمة المرور.' });
+    } finally {
+      setPasswordChanging(false);
+    }
+  };
 
   const allCatalogCourses = courses && courses.length > 0 ? courses : COURSES;
   const stageCourses = allCatalogCourses.filter((c) => c.grade === studentGrade);
@@ -313,6 +352,78 @@ export function ProgressDashboard({
           </div>
         )}
       </section>
+
+      {onChangePassword && (
+        <section className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 sm:p-7 shadow-xs space-y-4">
+          <div className="flex items-center gap-2.5 pb-3 border-b border-slate-200 dark:border-slate-800">
+            <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-400">
+              <Lock className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-slate-900 dark:text-white">تغيير كلمة المرور الخاصة بحسابك</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">أدخل كلمة المرور الحالية وكلمة المرور الجديدة لتحديث بيانات الأمان.</p>
+            </div>
+          </div>
+
+          <form onSubmit={handlePasswordChangeSubmit} className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">كلمة المرور الحالية</label>
+              <input
+                type="password"
+                required
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700 font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">كلمة المرور الجديدة (6 أحرف فأكثر)</label>
+              <input
+                type="password"
+                required
+                minLength={6}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700 font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">تأكيد كلمة المرور الجديدة</label>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full px-3.5 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700 font-mono"
+                />
+                <button
+                  type="submit"
+                  disabled={passwordChanging}
+                  className="px-5 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors shrink-0 disabled:opacity-60 cursor-pointer"
+                >
+                  {passwordChanging ? '...' : 'تغيير'}
+                </button>
+              </div>
+            </div>
+          </form>
+
+          {passwordChangeMsg && (
+            <div className={`p-3 rounded-lg border text-xs font-semibold flex items-center gap-2 ${
+              passwordChangeMsg.type === 'ok'
+                ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                : 'bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-red-800 dark:text-red-300'
+            }`}>
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{passwordChangeMsg.text}</span>
+            </div>
+          )}
+        </section>
+      )}
 
       {notifications.some((n) => !n.read) && (
         <section className="space-y-3">

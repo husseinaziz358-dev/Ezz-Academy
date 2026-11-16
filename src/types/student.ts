@@ -35,6 +35,8 @@ export interface LessonExamResult {
 export interface StudentRecord {
   id: string;
   studentName: string;
+  username?: string;
+  gmail?: string;
   studentAvatar?: string;
   studentPhone: string;
   studentEmail?: string;

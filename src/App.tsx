@@ -66,6 +66,7 @@ import {
   apiSyncPendingStudentSession,
   apiSyncStudentProgress,
   apiUpdateHeroImage,
+  apiUpdateStudentPassword,
   apiUploadMediaFile,
   formatTelegramUrl,
   formatWhatsappUrl,
@@ -1353,6 +1354,10 @@ export default function App() {
             activeDeviceCount={Math.max(1, session.activeDeviceIds.length)}
             onUpdateStudentName={handleUpdateStudentName}
             onUpdateStudentAvatar={handleUpdateStudentAvatar}
+            onChangePassword={async (cur, next) => {
+              if (!session.studentId) return { ok: false, error: 'غير مسجل دخول.' };
+              return await apiUpdateStudentPassword(session.studentId, session.token, cur, next);
+            }}
             completedLessonIds={session.completedLessonIds}
             attendanceDates={session.attendanceDates}
             notesByLesson={session.notesByLesson}

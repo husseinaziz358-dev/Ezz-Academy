@@ -61,6 +61,9 @@ export interface StudentNotificationRecord {
 export interface StudentRecord {
   id: string;
   studentName: string;
+  username?: string;
+  gmail?: string;
+  studentEmail?: string;
   studentAvatar?: string;
   studentPhone: string;
   parentName: string;
@@ -577,6 +580,8 @@ async function startServer() {
   app.post('/api/students/register', async (req: Request, res: Response) => {
     try {
       const studentName = String(req.body?.studentName ?? '').trim();
+      const username = String(req.body?.username ?? '').trim();
+      const gmail = String(req.body?.gmail ?? '').trim();
       const studentPhone = normalizePhone(String(req.body?.studentPhone ?? ''));
       const parentName = String(req.body?.parentName ?? '').trim();
       const parentPhone = normalizePhone(String(req.body?.parentPhone ?? ''));
@@ -649,6 +654,9 @@ async function startServer() {
       const newStudent: StudentRecord = {
         id: `stu-${Date.now()}`,
         studentName,
+        username,
+        gmail,
+        studentEmail: gmail,
         studentPhone,
         parentName,
         parentPhone,
@@ -688,6 +696,38 @@ async function startServer() {
     } catch (err) {
       console.error('Register error:', err);
       res.status(500).json({ error: 'تعذر تسجيل الحساب على الخادم.' });
+    }
+  });
+
+  // Forgot password endpoint (sends password info / confirmation via Gmail simulation)
+  app.post('/api/students/forgot-password', async (req: Request, res: Response) => {
+    try {
+      const phoneOrEmail = String(req.body?.phoneOrEmail ?? '').trim();
+      if (!phoneOrEmail) {
+        res.status(400).json({ error: 'يرجى إدخال رقم الهاتف أو البريد الإلكتروني (Gmail).' });
+        return;
+      }
+      const students = await ensureDb();
+      const normPhone = normalizePhone(phoneOrEmail);
+      const student = students.find(
+        (s) =>
+          normalizePhone(s.studentPhone) === normPhone ||
+          s.gmail?.toLowerCase() === phoneOrEmail.toLowerCase() ||
+          s.studentEmail?.toLowerCase() === phoneOrEmail.toLowerCase() ||
+          s.username?.toLowerCase() === phoneOrEmail.toLowerCase()
+      );
+      if (!student) {
+        res.status(404).json({ error: 'لم يتم العثور على طالب مسجل بهذا الرقم أو البريد.' });
+        return;
+      }
+      const targetEmail = student.gmail || student.studentEmail || 'بريدك الإلكتروني';
+      res.json({
+        ok: true,
+        message: `تم إرسال كلمة المرور بنجاح في رسالة إلى بريدك الإلكتروني (Gmail: ${targetEmail}).`,
+      });
+    } catch (err) {
+      console.error('Forgot password error:', err);
+      res.status(500).json({ error: 'تعذر معالجة طلب استرجاع كلمة المرور.' });
     }
   });
 
@@ -1088,6 +1128,58 @@ async function startServer() {
     } catch (err) {
       console.error('Progress update error:', err);
       res.status(500).json({ error: 'تعذر حفظ التقدم.' });
+    }
+  });
+
+  // Change student password endpoint
+  app.patch('/api/students/:id/password', async (req: Request, res: Response) => {
+    try {
+      const authHeader = req.headers.authorization || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const decoded = verifyToken(token);
+      if (!decoded) {
+        res.status(401).json({ error: 'غير مصرح.' });
+        return;
+      }
+      const targetId = req.params.id;
+      if (decoded.role === 'student' && decoded.sub !== targetId) {
+        res.status(403).json({ error: 'لا يمكنك تغيير كلمة مرور طالب آخر.' });
+        return;
+      }
+      const currentPassword = String(req.body?.currentPassword ?? '');
+      const newPassword = String(req.body?.newPassword ?? '');
+      if (!newPassword || newPassword.length < 6) {
+        res.status(400).json({ error: 'كلمة المرور الجديدة يجب ألا تقل عن 6 أحرف أو أرقام.' });
+        return;
+      }
+
+      const students = await ensureDb();
+      const idx = students.findIndex((s) => s.id === targetId);
+      if (idx === -1) {
+        res.status(404).json({ error: 'الطالب غير موجود.' });
+        return;
+      }
+
+      const existing = students[idx];
+      if (existing.passwordHash) {
+        const curHash = hashStudentPassword(currentPassword);
+        if (curHash !== existing.passwordHash) {
+          res.status(400).json({ error: 'كلمة المرور الحالية غير صحيحة.' });
+          return;
+        }
+      }
+
+      const updated = {
+        ...existing,
+        passwordHash: hashStudentPassword(newPassword),
+        updatedAt: new Date().toISOString(),
+      };
+      students[idx] = updated;
+      await saveDb(students);
+      res.json({ ok: true, message: 'تم تغيير كلمة المرور بنجاح.' });
+    } catch (err) {
+      console.error('Change student password error:', err);
+      res.status(500).json({ error: 'تعذر تغيير كلمة المرور.' });
     }
   });
 
