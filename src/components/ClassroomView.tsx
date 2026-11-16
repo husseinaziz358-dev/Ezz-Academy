@@ -1,11 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   Award,
-  BookOpen,
   CheckCircle2,
   Circle,
-  Code2,
   Download,
   ExternalLink,
   FileText,
@@ -16,6 +14,7 @@ import {
   Play,
   RotateCcw,
   Video,
+  Wallet,
 } from 'lucide-react';
 import {
   Course,
@@ -27,20 +26,28 @@ import {
 } from '../data/academyData';
 import { InteractiveConceptLab } from './InteractiveConceptLab';
 import { CertificateModal } from './CertificateModal';
+import { formatAttendanceDateArabic, getTodayDateKey } from '../utils/attendance';
 
 interface ClassroomViewProps {
   course: Course;
   instructorName?: string;
   isUnlocked: boolean;
   completedLessonIds: string[];
+  attendanceDates?: Record<string, string>;
   notesByLesson: Record<string, string>;
   quizAnswers: Record<string, number>;
   studentName: string;
   onUpdateStudentName: (name: string) => void;
   onToggleLessonComplete: (lessonId: string) => void;
+  onMarkLessonComplete?: (lessonId: string) => void;
+  onRecordLessonAttendance?: (lessonId: string, dateKey: string) => void;
   onSaveNote: (lessonId: string, note: string) => void;
   onRecordQuizAnswer: (lessonId: string, optionIndex: number) => void;
   onBackToCatalog: () => void;
+  isStudent?: boolean;
+  walletBalance?: number;
+  onPurchaseCourse?: () => Promise<void> | void;
+  purchaseFeedback?: { type: 'ok' | 'error'; text: string } | null;
 }
 
 type StageMode = 'lecture' | 'lab';
@@ -113,20 +120,28 @@ export function ClassroomView({
   instructorName,
   isUnlocked,
   completedLessonIds,
+  attendanceDates = {},
   notesByLesson,
   quizAnswers,
   studentName,
   onUpdateStudentName,
   onToggleLessonComplete,
+  onMarkLessonComplete,
+  onRecordLessonAttendance,
   onSaveNote,
   onRecordQuizAnswer,
   onBackToCatalog,
+  isStudent = false,
+  walletBalance = 0,
+  onPurchaseCourse,
+  purchaseFeedback,
 }: ClassroomViewProps) {
   const allLessons = useMemo(() => getCourseAllLessons(course), [course]);
   const [activeLessonId, setActiveLessonId] = useState<string>(allLessons[0]?.id ?? '');
   const [activeVideoIndex, setActiveVideoIndex] = useState<number>(0);
   const [stageMode, setStageMode] = useState<StageMode>('lecture');
   const [showNotesPanel, setShowNotesPanel] = useState<boolean>(false);
+  const [measuredVideoSeconds, setMeasuredVideoSeconds] = useState<Record<string, number>>({});
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<1 | 1.25 | 1.5>(1);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
@@ -137,7 +152,46 @@ export function ClassroomView({
   const resolvedInstructorName =
     instructorName || getInstructorById(course.instructorId).name;
 
-  const totalDurationSeconds = (activeLesson?.durationMinutes || 30) * 60;
+  const activeLessonIndex = activeLesson
+    ? allLessons.findIndex((l) => l.id === activeLesson.id)
+    : -1;
+  const canAccessActiveLessonOnMount =
+    Boolean(activeLesson) && (isUnlocked || activeLessonIndex === 0);
+
+  const onRecordAttendanceRef = useRef(onRecordLessonAttendance);
+  onRecordAttendanceRef.current = onRecordLessonAttendance;
+  const onMarkCompleteRef = useRef(onMarkLessonComplete);
+  onMarkCompleteRef.current = onMarkLessonComplete;
+  const autoAttendedRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!activeLesson || !canAccessActiveLessonOnMount) return;
+    const todayKey = getTodayDateKey();
+    const visitKey = `${course.id}::${activeLesson.id}::${todayKey}`;
+    if (autoAttendedRef.current.has(visitKey)) return;
+    autoAttendedRef.current.add(visitKey);
+
+    if (onRecordAttendanceRef.current) {
+      onRecordAttendanceRef.current(activeLesson.id, todayKey);
+    } else if (!completedLessonIds.includes(activeLesson.id)) {
+      onMarkCompleteRef.current?.(activeLesson.id);
+    }
+  }, [course.id, activeLesson?.id, canAccessActiveLessonOnMount, completedLessonIds, activeLesson]);
+
+  const getLessonAutoMinutes = (lesson: Lesson): number => {
+    const videos = lesson.videos ?? [];
+    if (videos.length > 0) {
+      const totalSec = videos.reduce(
+        (sum, v) => sum + (measuredVideoSeconds[v.id] ?? v.durationSeconds ?? 0),
+        0
+      );
+      if (totalSec > 0) return Math.max(1, Math.round(totalSec / 60));
+    }
+    return lesson.durationMinutes || 0;
+  };
+
+  const activeLessonMinutes = activeLesson ? getLessonAutoMinutes(activeLesson) : 0;
+  const totalDurationSeconds = (activeLessonMinutes || 30) * 60;
 
   useEffect(() => {
     if (allLessons.length > 0 && !allLessons.some((l) => l.id === activeLessonId)) {
@@ -152,10 +206,16 @@ export function ClassroomView({
   }, [activeLesson?.id]);
 
   useEffect(() => {
-    if (!isPlaying) return;
+    if (!isPlaying || !activeLesson) return;
     const interval = window.setInterval(() => {
       setElapsedSeconds((prev) => {
         const next = prev + playbackSpeed;
+        if (
+          next >= totalDurationSeconds * 0.8 &&
+          !completedLessonIds.includes(activeLesson.id)
+        ) {
+          onMarkLessonComplete?.(activeLesson.id);
+        }
         if (next >= totalDurationSeconds) {
           setIsPlaying(false);
           return totalDurationSeconds;
@@ -164,7 +224,14 @@ export function ClassroomView({
       });
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [isPlaying, playbackSpeed, totalDurationSeconds]);
+  }, [
+    isPlaying,
+    playbackSpeed,
+    totalDurationSeconds,
+    activeLesson,
+    completedLessonIds,
+    onMarkLessonComplete,
+  ]);
 
   if (!activeLesson) {
     return (
@@ -216,6 +283,7 @@ export function ClassroomView({
   const currentIndex = allLessons.findIndex((l) => l.id === activeLesson.id);
   const nextLesson = allLessons[currentIndex + 1];
   const canAccessActiveLesson = isUnlocked || currentIndex === 0;
+  const activeLessonAttendanceDate = attendanceDates[activeLesson.id];
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 overflow-x-hidden">
@@ -291,6 +359,15 @@ export function ClassroomView({
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              {canAccessActiveLesson && activeLessonAttendanceDate && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border bg-blue-50 border-blue-200 text-blue-800 whitespace-nowrap">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+                  <span>
+                    حضور مسجل: {formatAttendanceDateArabic(activeLessonAttendanceDate)}
+                  </span>
+                </span>
+              )}
+
               {canAccessActiveLesson && (
                 <button
                   type="button"
@@ -306,7 +383,7 @@ export function ClassroomView({
                   ) : (
                     <Circle className="w-4 h-4 text-slate-400" />
                   )}
-                  <span>{isCurrentLessonDone ? 'تمت المشاهدة' : 'تحديد الحصة كمكتملة'}</span>
+                  <span>{isCurrentLessonDone ? 'تم سماع الحصة' : 'تحديد الحصة كمسموعة'}</span>
                 </button>
               )}
 
@@ -327,8 +404,34 @@ export function ClassroomView({
               <Lock className="w-10 h-10 text-amber-400 mx-auto" />
               <h2 className="text-xl font-bold">هذه الحصة متاحة للمشتركين في الكورس</h2>
               <p className="text-sm text-slate-300 max-w-md mx-auto leading-relaxed">
-                الحصة الأولى مجانية للتجربة. لتشغيل باقي حصص «{course.title}» ومشاهدة الفيديوهات والملفات والامتحانات، تواصل مع إدارة المنصة لتفعيل الاشتراك في حسابك.
+                الحصة الأولى مجانية للتجربة. لتشغيل باقي حصص «{course.title}» ومشاهدة الفيديوهات والملفات والامتحانات، يمكنك شراء الكورس من محفظة حسابك ({course.priceEgp} ج.م).
               </p>
+              {isStudent && onPurchaseCourse && (
+                <div className="space-y-3 pt-1">
+                  <div className="text-xs text-slate-300 tabular-nums">
+                    رصيد محفظتك الحالي: <span className="font-bold text-white">{walletBalance} ج.م</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void onPurchaseCourse()}
+                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-600 transition-colors cursor-pointer"
+                  >
+                    <Wallet className="w-4 h-4" />
+                    <span>شراء وتفعيل الكورس ({course.priceEgp} ج.م)</span>
+                  </button>
+                  {purchaseFeedback && (
+                    <div
+                      className={`text-xs font-medium px-3 py-2 rounded-lg max-w-md mx-auto ${
+                        purchaseFeedback.type === 'error'
+                          ? 'bg-red-950/70 border border-red-700 text-red-200'
+                          : 'bg-emerald-950/70 border border-emerald-700 text-emerald-200'
+                      }`}
+                    >
+                      {purchaseFeedback.text}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : stageMode === 'lab' ? (
             <InteractiveConceptLab kind={activeLesson.simulationKind} />
@@ -372,6 +475,31 @@ export function ClassroomView({
                           playsInline
                           preload="metadata"
                           src={resolved.src}
+                          onLoadedMetadata={(e) => {
+                            const dur = e.currentTarget.duration;
+                            if (Number.isFinite(dur) && dur > 0) {
+                              setMeasuredVideoSeconds((prev) => ({
+                                ...prev,
+                                [activeVideo.id]: Math.round(dur),
+                              }));
+                            }
+                          }}
+                          onTimeUpdate={(e) => {
+                            const dur = e.currentTarget.duration;
+                            if (
+                              canAccessActiveLesson &&
+                              dur > 0 &&
+                              e.currentTarget.currentTime / dur >= 0.8 &&
+                              !isCurrentLessonDone
+                            ) {
+                              onMarkLessonComplete?.(activeLesson.id);
+                            }
+                          }}
+                          onEnded={() => {
+                            if (canAccessActiveLesson && !isCurrentLessonDone) {
+                              onMarkLessonComplete?.(activeLesson.id);
+                            }
+                          }}
                           className="w-full aspect-video bg-black"
                         >
                           المتصفح لا يدعم تشغيل هذا الفيديو مباشرة.
@@ -429,18 +557,17 @@ export function ClassroomView({
                       <span>
                         {course.grade} · {course.category}
                       </span>
-                      <span className="font-mono tabular-nums">
-                        {activeLesson.durationMinutes} دقيقة
-                      </span>
+                      {activeLessonMinutes > 0 && (
+                        <span className="font-mono tabular-nums">
+                          {activeLessonMinutes} دقيقة
+                        </span>
+                      )}
                     </div>
 
                     <div className="my-5 max-w-2xl">
-                      <h2 className="text-xl sm:text-2xl font-bold text-white mb-3 text-balance">
+                      <h2 className="text-xl sm:text-2xl font-bold text-white text-balance">
                         {activeLesson.title}
                       </h2>
-                      <p className="text-sm text-slate-300 leading-relaxed">
-                        {activeLesson.summary}
-                      </p>
                     </div>
 
                     <div className="space-y-3">
@@ -594,13 +721,24 @@ export function ClassroomView({
                         key={qIdx}
                         className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3"
                       >
-                        <div className="space-y-1">
+                        <div className="space-y-2.5">
                           <div className="text-xs font-semibold text-blue-700 tabular-nums">
                             السؤال {qIdx + 1} من {examQuestions.length}
                           </div>
-                          <h4 className="text-sm sm:text-base font-bold text-slate-900">
-                            {q.question}
-                          </h4>
+                          {q.questionImage && (
+                            <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+                              <img
+                                src={q.questionImage}
+                                alt={`صورة السؤال ${qIdx + 1}`}
+                                className="w-full max-h-[440px] object-contain mx-auto"
+                              />
+                            </div>
+                          )}
+                          {q.question && q.question.trim().length > 0 && (
+                            <h4 className="text-sm sm:text-base font-bold text-slate-900">
+                              {q.question}
+                            </h4>
+                          )}
                         </div>
 
                         <div className="space-y-2">
@@ -650,10 +788,14 @@ export function ClassroomView({
                                 : 'bg-white border-slate-200 text-slate-800'
                             }`}
                           >
-                            <strong className="block mb-1">
-                              {isCorrect ? 'أحسنت! التفسير:' : 'تفسير الحل النموذجي:'}
+                            <strong className="block mb-0.5">
+                              {isCorrect
+                                ? 'إجابة صحيحة! أحسنت.'
+                                : 'إجابة غير صحيحة — راجع الإجابة الصحيحة المحددة بالأخضر.'}
                             </strong>
-                            {q.explanation}
+                            {q.explanation && q.explanation.trim().length > 0 && (
+                              <span className="block mt-1">{q.explanation}</span>
+                            )}
                           </div>
                         )}
                       </div>
@@ -662,80 +804,30 @@ export function ClassroomView({
                 </div>
               </div>
 
-              {/* 4. Lesson Summary & Student Notes */}
-              <div className="bg-white rounded-xl border border-slate-200 p-5 sm:p-6 space-y-5">
-                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200">
-                  <div className="flex items-center gap-2">
-                    <BookOpen className="w-4 h-4 text-blue-700" />
-                    <h3 className="text-base font-bold text-slate-900">
-                      ملخص الحصة والملاحظات
-                    </h3>
-                  </div>
+              {/* Optional Personal Student Notes Toggle */}
+              <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs sm:text-sm font-bold text-slate-900">
+                    ملاحظاتك الخاصة في الحصة
+                  </span>
                   <button
                     type="button"
                     onClick={() => setShowNotesPanel((s) => !s)}
                     className="text-xs font-semibold text-blue-700 hover:underline cursor-pointer"
                   >
-                    {showNotesPanel ? 'إخفاء دفتر الملاحظات' : 'تدوين ملاحظاتك في الحصة'}
+                    {showNotesPanel ? 'إخفاء' : 'كتابة / عرض الملاحظات'}
                   </button>
                 </div>
 
-                <p className="text-sm text-slate-600 leading-relaxed">{activeLesson.summary}</p>
-
-                {activeLesson.keyTakeaways.length > 0 && (
-                  <ul className="space-y-2">
-                    {activeLesson.keyTakeaways.map((point, index) => (
-                      <li
-                        key={index}
-                        className="flex items-start gap-2.5 text-sm text-slate-700 leading-relaxed"
-                      >
-                        <span className="font-mono text-xs text-blue-700 mt-1 tabular-nums">
-                          0{index + 1}.
-                        </span>
-                        <span>{point}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-
-                {activeLesson.codeSnippet && (
-                  <div className="pt-2">
-                    <div className="flex items-center justify-between text-xs text-slate-600 mb-2">
-                      <span className="inline-flex items-center gap-1.5 font-medium">
-                        <Code2 className="w-4 h-4 text-blue-700" />
-                        {activeLesson.codeSnippet.label}
-                      </span>
-                      <span className="font-mono text-slate-400">
-                        {activeLesson.codeSnippet.language}
-                      </span>
-                    </div>
-                    <pre
-                      dir="ltr"
-                      className="bg-slate-950 text-slate-100 p-4 rounded-lg text-xs font-mono overflow-x-auto leading-relaxed"
-                    >
-                      <code>{activeLesson.codeSnippet.code}</code>
-                    </pre>
-                  </div>
-                )}
-
                 {showNotesPanel && (
-                  <div className="space-y-2 pt-3 border-t border-slate-100">
-                    <div className="flex items-center justify-between">
-                      <label
-                        htmlFor="lesson-notes-textarea"
-                        className="text-xs font-semibold text-slate-900"
-                      >
-                        دفتر ملاحظات الحصة
-                      </label>
-                      <span className="text-xs text-slate-500">يتم الحفظ تلقائيًا</span>
-                    </div>
+                  <div className="space-y-2 pt-2 border-t border-slate-100">
                     <textarea
                       id="lesson-notes-textarea"
-                      rows={4}
+                      rows={3}
                       value={notesByLesson[activeLesson.id] ?? ''}
                       onChange={(e) => onSaveNote(activeLesson.id, e.target.value)}
-                      placeholder="اكتب القوانين أو المسائل التي تود مراجعتها في هذه الحصة..."
-                      className="w-full p-3.5 text-sm text-slate-800 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                      placeholder="اكتب ملاحظاتك في هذه الحصة (يتم الحفظ تلقائيًا)..."
+                      className="w-full p-3 text-sm text-slate-800 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                     />
                   </div>
                 )}
@@ -819,8 +911,15 @@ export function ClassroomView({
                             {lesson.title}
                           </div>
                           <div className="text-xs text-slate-500 mt-1 flex flex-wrap items-center gap-2 tabular-nums">
-                            <span>{lesson.durationMinutes} دقيقة</span>
-                            {vidsCount > 0 && <span>· {vidsCount} فيديو</span>}
+                            {getLessonAutoMinutes(lesson) > 0 && (
+                              <span>{getLessonAutoMinutes(lesson)} دقيقة</span>
+                            )}
+                            {vidsCount > 0 && (
+                              <span>
+                                {getLessonAutoMinutes(lesson) > 0 ? '· ' : ''}
+                                {vidsCount} فيديو
+                              </span>
+                            )}
                             {filesCount > 0 && <span>· {filesCount} ملف</span>}
                             {locked && <span>· للمشتركين</span>}
                           </div>

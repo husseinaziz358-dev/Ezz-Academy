@@ -88,7 +88,23 @@
         },
         "attendanceRate": {
           "type": "integer",
-          "description": "Attendance percentage from 0 to 100."
+          "description": "Automatic attendance percentage from 0 to 100 computed from watched lessons."
+        },
+        "attendanceDates": {
+          "type": "object",
+          "description": "Map of lesson IDs to the calendar date (YYYY-MM-DD) when the student opened or attended the lesson."
+        },
+        "walletBalance": {
+          "type": "integer",
+          "description": "Student wallet balance in EGP added by supervisor and spent on course purchases."
+        },
+        "isBlocked": {
+          "type": "boolean",
+          "description": "Whether the student account has been blocked by the supervisor."
+        },
+        "activeDeviceIds": {
+          "type": "array",
+          "description": "List of unique device identifiers that have signed into this student account."
         },
         "createdAt": {
           "type": "string",
@@ -181,6 +197,49 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "StudentNotification": {
+      "title": "StudentNotification",
+      "description": "In-platform alert sent by supervisor to a student regarding attendance or academic follow-up.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique notification identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentUid": {
+          "type": "string",
+          "description": "Recipient student Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Short alert title.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "message": {
+          "type": "string",
+          "description": "Alert body message displayed to the student.",
+          "minLength": 2,
+          "maxLength": 500
+        },
+        "read": {
+          "type": "boolean",
+          "description": "Whether the student has marked this alert as read."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": ["id", "studentUid", "title", "message", "read", "createdAt"]
     }
   },
   "firestore": {
@@ -195,6 +254,10 @@
     "/students/{studentUid}/private/{docId}": {
       "schema": { "$ref": "#/entities/StudentPrivateContact" },
       "description": "Isolated PII contact subcollection ('contact' doc) owned by the student and readable by supervisor."
+    },
+    "/students/{studentUid}/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/StudentNotification" },
+      "description": "In-platform attendance and supervisor alert notifications for a student."
     }
   }
 }

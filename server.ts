@@ -5,6 +5,12 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import {
+  COURSES,
+  normalizeSubjectCategory,
+  type Course,
+} from './src/data/academyData';
+import { computeStudentAttendance } from './src/utils/attendance';
 
 dotenv.config();
 
@@ -38,6 +44,14 @@ function verifyStudentPassword(password: string, storedHash: string): boolean {
   return inputBuf.length === storedBuf.length && crypto.timingSafeEqual(inputBuf, storedBuf);
 }
 
+export interface StudentNotificationRecord {
+  id: string;
+  title: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
+}
+
 export interface StudentRecord {
   id: string;
   studentName: string;
@@ -55,6 +69,11 @@ export interface StudentRecord {
   notesByLesson: Record<string, string>;
   supervisorNotes: string;
   attendanceRate: number;
+  attendanceDates?: Record<string, string>;
+  walletBalance?: number;
+  isBlocked?: boolean;
+  activeDeviceIds?: string[];
+  notifications?: StudentNotificationRecord[];
   createdAt: string;
   updatedAt: string;
 }
@@ -64,70 +83,7 @@ function sanitizeStudent(student: StudentRecord): Omit<StudentRecord, 'passwordH
   return safe;
 }
 
-const SEED_STUDENTS: StudentRecord[] = [
-  {
-    id: 'stu-1001',
-    studentName: 'عمر خالد محمود',
-    studentPhone: '01012345678',
-    parentName: 'خالد محمود عبد العزيز',
-    parentPhone: '01099887766',
-    motherName: 'سحر أحمد حسن',
-    stage: 'الصف الثالث الثانوي',
-    specializationType: 'شعبة',
-    specialization: 'علمي رياضة',
-    passwordHash: hashStudentPassword('123456'),
-    unlockedCourseIds: ['course-sec3-pure-applied', 'course-sec3-rescue'],
-    completedLessonIds: ['les-sec3-1', 'les-sec3-2'],
-    quizAnswers: { 'les-sec3-1': 0, 'les-sec3-2': 0 },
-    notesByLesson: {
-      'les-sec3-1': 'مراجعة ميل العمودي والنقط الحرجة قبل الامتحان الشامل.',
-    },
-    supervisorNotes: 'طالب ملتزم في حضور السنتر والأونلاين، درجاته في التفاضل ممتازة.',
-    attendanceRate: 96,
-    createdAt: '2026-10-05T10:00:00.000Z',
-    updatedAt: '2026-11-10T14:30:00.000Z',
-  },
-  {
-    id: 'stu-1002',
-    studentName: 'مريم طارق الشريف',
-    studentPhone: '01122334455',
-    parentName: 'طارق الشريف محمد',
-    parentPhone: '01155443322',
-    motherName: 'نادية مصطفى علي',
-    stage: 'البكالوريا',
-    specializationType: 'مسار',
-    specialization: 'مسار الهندسة وعلوم الحاسب',
-    passwordHash: hashStudentPassword('123456'),
-    unlockedCourseIds: ['course-sec3-math-lang', 'course-sec-ai-coding'],
-    completedLessonIds: ['les-lang-1', 'les-prog-1'],
-    quizAnswers: { 'les-lang-1': 0 },
-    notesByLesson: {},
-    supervisorNotes: 'متفوقة في مسار الهندسة وعلوم الحاسب وتحتاج متابعة في المعدلات الزمنية.',
-    attendanceRate: 92,
-    createdAt: '2026-10-12T09:15:00.000Z',
-    updatedAt: '2026-11-12T16:20:00.000Z',
-  },
-  {
-    id: 'stu-1003',
-    studentName: 'يوسف إبراهيم سالم',
-    studentPhone: '01234567890',
-    parentName: 'إبراهيم سالم السيد',
-    parentPhone: '01209876543',
-    motherName: 'أمل محمود عبد الله',
-    stage: 'الصف الثاني الثانوي',
-    specializationType: 'شعبة',
-    specialization: 'علمي',
-    passwordHash: hashStudentPassword('123456'),
-    unlockedCourseIds: ['course-sec2-math'],
-    completedLessonIds: ['les-sec2-1'],
-    quizAnswers: {},
-    notesByLesson: {},
-    supervisorNotes: 'مطلوب متابعة ولي الأمر لاستكمال اختبارات الحصة الأولى.',
-    attendanceRate: 84,
-    createdAt: '2026-10-20T11:45:00.000Z',
-    updatedAt: '2026-11-13T18:00:00.000Z',
-  },
-];
+const SEED_STUDENTS: StudentRecord[] = [];
 
 async function ensureDb(): Promise<StudentRecord[]> {
   await fs.mkdir(DATA_DIR, { recursive: true });
@@ -161,6 +117,7 @@ interface LessonVideoRecord {
   title: string;
   url: string;
   sourceType: 'link' | 'upload';
+  durationSeconds?: number;
 }
 
 interface LessonAttachmentRecord {
@@ -171,10 +128,11 @@ interface LessonAttachmentRecord {
 }
 
 interface QuizQuestionRecord {
-  question: string;
+  question?: string;
+  questionImage?: string;
   options: string[];
   correctIndex: number;
-  explanation: string;
+  explanation?: string;
 }
 
 interface CustomCourseLessonRecord {
@@ -212,6 +170,7 @@ interface CustomCourseRecord {
 interface AcademyCatalogDb {
   teachers: DynamicTeacherRecord[];
   customCourses: CustomCourseRecord[];
+  deletedCourseIds: string[];
 }
 
 async function ensureCatalogDb(): Promise<AcademyCatalogDb> {
@@ -222,9 +181,10 @@ async function ensureCatalogDb(): Promise<AcademyCatalogDb> {
     return {
       teachers: Array.isArray(parsed.teachers) ? parsed.teachers : [],
       customCourses: Array.isArray(parsed.customCourses) ? parsed.customCourses : [],
+      deletedCourseIds: Array.isArray(parsed.deletedCourseIds) ? parsed.deletedCourseIds : [],
     };
   } catch {
-    const empty: AcademyCatalogDb = { teachers: [], customCourses: [] };
+    const empty: AcademyCatalogDb = { teachers: [], customCourses: [], deletedCourseIds: [] };
     await fs.writeFile(CATALOG_FILE, JSON.stringify(empty, null, 2), 'utf-8');
     return empty;
   }
@@ -233,6 +193,18 @@ async function ensureCatalogDb(): Promise<AcademyCatalogDb> {
 async function saveCatalogDb(catalog: AcademyCatalogDb): Promise<void> {
   await fs.mkdir(DATA_DIR, { recursive: true });
   await fs.writeFile(CATALOG_FILE, JSON.stringify(catalog, null, 2), 'utf-8');
+}
+
+function getMergedCourses(catalog: AcademyCatalogDb): Course[] {
+  const deletedSet = new Set(catalog.deletedCourseIds || []);
+  const custom = catalog.customCourses as unknown as Course[];
+  const overrideMap = new Map(custom.map((c) => [c.id, c]));
+  const builtInIds = new Set(COURSES.map((c) => c.id));
+  const customOnly = custom.filter((c) => !builtInIds.has(c.id) && !deletedSet.has(c.id));
+  const mergedBuiltIn = COURSES.filter((c) => !deletedSet.has(c.id)).map(
+    (c) => overrideMap.get(c.id) ?? c
+  );
+  return [...customOnly, ...mergedBuiltIn];
 }
 
 function signToken(payload: { role: 'supervisor' | 'student'; sub: string }): string {
@@ -347,21 +319,44 @@ async function startServer() {
       }
 
       const students = await ensureDb();
-      const student = students.find((s) => s.studentPhone === phone);
-      if (!student) {
+      const studentIdx = students.findIndex((s) => s.studentPhone === phone);
+      if (studentIdx === -1) {
         res.status(401).json({ error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' });
         return;
       }
 
+      const student = students[studentIdx];
       if (student.passwordHash && !verifyStudentPassword(password, student.passwordHash)) {
         res.status(401).json({ error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' });
         return;
       }
 
+      if (student.isBlocked) {
+        res.status(403).json({
+          error: 'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.',
+        });
+        return;
+      }
+
+      const deviceId = String(req.body?.deviceId ?? '').trim().slice(0, 100);
+      if (deviceId) {
+        const existingDevices = Array.isArray(student.activeDeviceIds)
+          ? student.activeDeviceIds
+          : [];
+        if (!existingDevices.includes(deviceId)) {
+          students[studentIdx] = {
+            ...student,
+            activeDeviceIds: [...existingDevices, deviceId].slice(0, 20),
+            updatedAt: new Date().toISOString(),
+          };
+          await saveDb(students);
+        }
+      }
+
       const token = signToken({ role: 'student', sub: student.id });
       res.json({
         role: 'student',
-        student: sanitizeStudent(student),
+        student: sanitizeStudent(students[studentIdx]),
         token,
       });
     } catch (err) {
@@ -415,6 +410,7 @@ async function startServer() {
       }
 
       const specializationType = stage === 'البكالوريا' ? 'مسار' : 'شعبة';
+      const deviceId = String(req.body?.deviceId ?? '').trim().slice(0, 100);
       const now = new Date().toISOString();
       const newStudent: StudentRecord = {
         id: `stu-${Date.now()}`,
@@ -432,7 +428,11 @@ async function startServer() {
         quizAnswers: {},
         notesByLesson: {},
         supervisorNotes: 'حساب جديد — في انتظار المراجعة الأولى.',
-        attendanceRate: 100,
+        attendanceRate: 0,
+        attendanceDates: {},
+        walletBalance: 0,
+        isBlocked: false,
+        activeDeviceIds: deviceId ? [deviceId] : [],
         createdAt: now,
         updatedAt: now,
       };
@@ -472,14 +472,45 @@ async function startServer() {
       }
 
       const existing = students[idx];
+      if (existing.isBlocked) {
+        res.status(403).json({ error: 'تم حظر هذا الحساب من قِبل الإدارة.' });
+        return;
+      }
+      const nextUnlocked = Array.isArray(req.body?.unlockedCourseIds)
+        ? req.body.unlockedCourseIds
+        : existing.unlockedCourseIds;
+      const nextCompleted = Array.isArray(req.body?.completedLessonIds)
+        ? req.body.completedLessonIds
+        : existing.completedLessonIds;
+
+      const catalog = await ensureCatalogDb();
+      const autoAttendance = computeStudentAttendance(
+        {
+          unlockedCourseIds: nextUnlocked,
+          completedLessonIds: nextCompleted,
+          stage: existing.stage,
+        },
+        getMergedCourses(catalog)
+      );
+
+      const nextAttendanceDates =
+        req.body?.attendanceDates && typeof req.body.attendanceDates === 'object'
+          ? (req.body.attendanceDates as Record<string, string>)
+          : existing.attendanceDates ?? {};
+
+      const deviceId = String(req.body?.deviceId ?? '').trim().slice(0, 100);
+      const currentDevices = Array.isArray(existing.activeDeviceIds)
+        ? existing.activeDeviceIds
+        : [];
+      const nextDevices =
+        deviceId && !currentDevices.includes(deviceId)
+          ? [...currentDevices, deviceId].slice(0, 20)
+          : currentDevices;
+
       const updated: StudentRecord = {
         ...existing,
-        unlockedCourseIds: Array.isArray(req.body?.unlockedCourseIds)
-          ? req.body.unlockedCourseIds
-          : existing.unlockedCourseIds,
-        completedLessonIds: Array.isArray(req.body?.completedLessonIds)
-          ? req.body.completedLessonIds
-          : existing.completedLessonIds,
+        unlockedCourseIds: nextUnlocked,
+        completedLessonIds: nextCompleted,
         quizAnswers:
           req.body?.quizAnswers && typeof req.body.quizAnswers === 'object'
             ? req.body.quizAnswers
@@ -488,6 +519,9 @@ async function startServer() {
           req.body?.notesByLesson && typeof req.body.notesByLesson === 'object'
             ? req.body.notesByLesson
             : existing.notesByLesson,
+        attendanceRate: autoAttendance.rate,
+        attendanceDates: nextAttendanceDates,
+        activeDeviceIds: nextDevices,
         updatedAt: new Date().toISOString(),
       };
 
@@ -500,18 +534,148 @@ async function startServer() {
     }
   });
 
+  // Get fresh student profile (walletBalance, isBlocked, activeDeviceIds, unlockedCourseIds)
+  app.get('/api/students/:id/me', async (req: Request, res: Response) => {
+    try {
+      const authHeader = req.headers.authorization || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const decoded = verifyToken(token);
+      if (!decoded) {
+        res.status(401).json({ error: 'غير مصرح.' });
+        return;
+      }
+      const targetId = req.params.id;
+      if (decoded.role === 'student' && decoded.sub !== targetId) {
+        res.status(403).json({ error: 'غير مصرح.' });
+        return;
+      }
+      const students = await ensureDb();
+      const idx = students.findIndex((s) => s.id === targetId);
+      if (idx === -1) {
+        res.status(404).json({ error: 'الطالب غير موجود.' });
+        return;
+      }
+      const deviceId = String(req.query.deviceId ?? '').trim().slice(0, 100);
+      if (deviceId && !students[idx].isBlocked) {
+        const curDevices = Array.isArray(students[idx].activeDeviceIds)
+          ? students[idx].activeDeviceIds!
+          : [];
+        if (!curDevices.includes(deviceId)) {
+          students[idx] = {
+            ...students[idx],
+            activeDeviceIds: [...curDevices, deviceId].slice(0, 20),
+            updatedAt: new Date().toISOString(),
+          };
+          await saveDb(students);
+        }
+      }
+      res.json({ student: sanitizeStudent(students[idx]) });
+    } catch (err) {
+      console.error('Fetch student me error:', err);
+      res.status(500).json({ error: 'تعذر تحميل بيانات الحساب.' });
+    }
+  });
+
+  // Purchase/enroll a course using student wallet balance
+  app.post('/api/students/:id/purchase-course', async (req: Request, res: Response) => {
+    try {
+      const authHeader = req.headers.authorization || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const decoded = verifyToken(token);
+      if (!decoded) {
+        res.status(401).json({ error: 'غير مصرح.' });
+        return;
+      }
+      const targetId = req.params.id;
+      if (decoded.role === 'student' && decoded.sub !== targetId) {
+        res.status(403).json({ error: 'لا يمكنك تنفيذ عملية على حساب آخر.' });
+        return;
+      }
+
+      const courseId = String(req.body?.courseId ?? '').trim();
+      if (!courseId) {
+        res.status(400).json({ error: 'معرف الكورس مطلوب.' });
+        return;
+      }
+
+      const [students, catalog] = await Promise.all([ensureDb(), ensureCatalogDb()]);
+      const idx = students.findIndex((s) => s.id === targetId);
+      if (idx === -1) {
+        res.status(404).json({ error: 'الطالب غير موجود.' });
+        return;
+      }
+      const existing = students[idx];
+      if (existing.isBlocked) {
+        res.status(403).json({ error: 'تم حظر هذا الحساب من قِبل الإدارة.' });
+        return;
+      }
+
+      const merged = getMergedCourses(catalog);
+      const course = merged.find((c) => c.id === courseId);
+      if (!course) {
+        res.status(404).json({ error: 'الكورس المطلوب غير موجود.' });
+        return;
+      }
+      if (existing.unlockedCourseIds.includes(courseId)) {
+        res.json({ student: sanitizeStudent(existing), alreadyUnlocked: true });
+        return;
+      }
+
+      const price = Math.max(0, Number(course.priceEgp) || 0);
+      const balance = Math.max(0, Number(existing.walletBalance) || 0);
+      if (balance < price) {
+        res.status(400).json({
+          error: `رصيد المحفظة غير كافٍ. الرصيد الحالي ${balance} ج.م وسعر الكورس ${price} ج.م.`,
+        });
+        return;
+      }
+
+      const nextUnlocked = [...existing.unlockedCourseIds, courseId];
+      const autoAttendance = computeStudentAttendance(
+        {
+          unlockedCourseIds: nextUnlocked,
+          completedLessonIds: existing.completedLessonIds,
+          stage: existing.stage,
+        },
+        merged
+      );
+
+      const updated: StudentRecord = {
+        ...existing,
+        walletBalance: balance - price,
+        unlockedCourseIds: nextUnlocked,
+        attendanceRate: autoAttendance.rate,
+        updatedAt: new Date().toISOString(),
+      };
+      students[idx] = updated;
+      await saveDb(students);
+      res.json({ student: sanitizeStudent(updated) });
+    } catch (err) {
+      console.error('Purchase course error:', err);
+      res.status(500).json({ error: 'تعذر إتمام شراء الكورس من المحفظة.' });
+    }
+  });
+
   // Supervisor: list all students
   app.get('/api/supervisor/students', requireSupervisor, async (_req: Request, res: Response) => {
     try {
-      const students = await ensureDb();
-      res.json({ students: students.map(sanitizeStudent) });
+      const [students, catalog] = await Promise.all([ensureDb(), ensureCatalogDb()]);
+      const mergedCourses = getMergedCourses(catalog);
+      const computed = students.map((stu) => {
+        const auto = computeStudentAttendance(stu, mergedCourses);
+        return sanitizeStudent({
+          ...stu,
+          attendanceRate: auto.rate,
+        });
+      });
+      res.json({ students: computed });
     } catch (err) {
       console.error('Supervisor list error:', err);
       res.status(500).json({ error: 'تعذر تحميل قائمة الطلاب.' });
     }
   });
 
-  // Supervisor: update student follow-up notes, attendance, or unlocked courses
+  // Supervisor: update student block status, wallet balance, active devices, notes or unlocked courses
   app.patch(
     '/api/supervisor/students/:id',
     requireSupervisor,
@@ -525,19 +689,50 @@ async function startServer() {
         }
 
         const existing = students[idx];
+        const nextUnlocked = Array.isArray(req.body?.unlockedCourseIds)
+          ? req.body.unlockedCourseIds
+          : existing.unlockedCourseIds;
+        const catalog = await ensureCatalogDb();
+        const autoAttendance = computeStudentAttendance(
+          {
+            unlockedCourseIds: nextUnlocked,
+            completedLessonIds: existing.completedLessonIds,
+            stage: existing.stage,
+          },
+          getMergedCourses(catalog)
+        );
+
+        let nextWallet = Math.max(0, Number(existing.walletBalance) || 0);
+        if (typeof req.body?.walletBalance === 'number' && Number.isFinite(req.body.walletBalance)) {
+          nextWallet = Math.max(0, Math.round(req.body.walletBalance));
+        }
+        if (typeof req.body?.addWalletAmount === 'number' && Number.isFinite(req.body.addWalletAmount)) {
+          nextWallet = Math.max(0, Math.round(nextWallet + req.body.addWalletAmount));
+        }
+
+        const nextBlocked =
+          typeof req.body?.isBlocked === 'boolean'
+            ? req.body.isBlocked
+            : Boolean(existing.isBlocked);
+
+        const nextDevices =
+          req.body?.resetDevices === true
+            ? []
+            : Array.isArray(req.body?.activeDeviceIds)
+              ? req.body.activeDeviceIds
+              : existing.activeDeviceIds ?? [];
+
         const updated: StudentRecord = {
           ...existing,
           supervisorNotes:
             typeof req.body?.supervisorNotes === 'string'
               ? req.body.supervisorNotes
               : existing.supervisorNotes,
-          attendanceRate:
-            typeof req.body?.attendanceRate === 'number'
-              ? Math.max(0, Math.min(100, req.body.attendanceRate))
-              : existing.attendanceRate,
-          unlockedCourseIds: Array.isArray(req.body?.unlockedCourseIds)
-            ? req.body.unlockedCourseIds
-            : existing.unlockedCourseIds,
+          attendanceRate: autoAttendance.rate,
+          unlockedCourseIds: nextUnlocked,
+          walletBalance: nextWallet,
+          isBlocked: nextBlocked,
+          activeDeviceIds: nextDevices,
           updatedAt: new Date().toISOString(),
         };
 
@@ -550,6 +745,113 @@ async function startServer() {
       }
     }
   );
+
+  // Supervisor: send in-platform attendance/follow-up alert to selected students
+  app.post('/api/supervisor/alerts', requireSupervisor, async (req: Request, res: Response) => {
+    try {
+      const studentIds = Array.isArray(req.body?.studentIds)
+        ? req.body.studentIds.map((id: unknown) => String(id).trim()).filter(Boolean)
+        : [];
+      const title = String(req.body?.title ?? '').trim().slice(0, 120);
+      const message = String(req.body?.message ?? '').trim().slice(0, 500);
+
+      if (studentIds.length === 0) {
+        res.status(400).json({ error: 'يرجى تحديد طالب واحد على الأقل.' });
+        return;
+      }
+      if (title.length < 2 || message.length < 2) {
+        res.status(400).json({ error: 'يرجى إدخال عنوان ونص التنبيه.' });
+        return;
+      }
+
+      const [students, catalog] = await Promise.all([ensureDb(), ensureCatalogDb()]);
+      const mergedCourses = getMergedCourses(catalog);
+      const idSet = new Set(studentIds);
+      const now = new Date().toISOString();
+      let sentCount = 0;
+
+      const nextStudents = students.map((stu) => {
+        if (!idSet.has(stu.id)) return stu;
+        const notif: StudentNotificationRecord = {
+          id: `notif-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+          title,
+          message,
+          read: false,
+          createdAt: now,
+        };
+        sentCount += 1;
+        const existingNotifs = Array.isArray(stu.notifications) ? stu.notifications : [];
+        return {
+          ...stu,
+          notifications: [notif, ...existingNotifs].slice(0, 30),
+          updatedAt: now,
+        };
+      });
+
+      await saveDb(nextStudents);
+      const computed = nextStudents.map((stu) => {
+        const auto = computeStudentAttendance(stu, mergedCourses);
+        return sanitizeStudent({
+          ...stu,
+          attendanceRate: auto.rate,
+        });
+      });
+
+      res.status(201).json({ ok: true, sentCount, students: computed });
+    } catch (err) {
+      console.error('Send supervisor alert error:', err);
+      res.status(500).json({ error: 'تعذر إرسال التنبيه للطلاب.' });
+    }
+  });
+
+  // Student: mark notifications as read
+  app.patch('/api/students/:id/notifications/read', async (req: Request, res: Response) => {
+    try {
+      const authHeader = req.headers.authorization || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const decoded = verifyToken(token);
+      if (!decoded) {
+        res.status(401).json({ error: 'غير مصرح.' });
+        return;
+      }
+      const targetId = req.params.id;
+      if (decoded.role === 'student' && decoded.sub !== targetId) {
+        res.status(403).json({ error: 'غير مصرح.' });
+        return;
+      }
+
+      const students = await ensureDb();
+      const idx = students.findIndex((s) => s.id === targetId);
+      if (idx === -1) {
+        res.status(404).json({ error: 'الطالب غير موجود.' });
+        return;
+      }
+
+      const targetIds = Array.isArray(req.body?.notificationIds)
+        ? new Set(req.body.notificationIds.map((id: unknown) => String(id)))
+        : null;
+
+      const existingNotifs = Array.isArray(students[idx].notifications)
+        ? students[idx].notifications!
+        : [];
+      const nextNotifs = existingNotifs.map((n) =>
+        !targetIds || targetIds.size === 0 || targetIds.has(n.id)
+          ? { ...n, read: true }
+          : n
+      );
+
+      students[idx] = {
+        ...students[idx],
+        notifications: nextNotifs,
+        updatedAt: new Date().toISOString(),
+      };
+      await saveDb(students);
+      res.json({ student: sanitizeStudent(students[idx]) });
+    } catch (err) {
+      console.error('Mark notifications read error:', err);
+      res.status(500).json({ error: 'تعذر تحديث حالة التنبيهات.' });
+    }
+  });
 
   // Parent lookup by parentPhone or studentPhone
   app.get('/api/parent/lookup', async (req: Request, res: Response) => {
@@ -696,16 +998,12 @@ async function startServer() {
           ? lessonTitles
           : ['الحصة الأولى: شرح الأساسيات والتطبيقات'];
 
-      const defaultQuiz = (lesTitle: string): QuizQuestionRecord => ({
-        question: `اختبار سريع على: ${lesTitle}`,
-        options: [
-          'مراجعة المفهوم الأساسي وتطبيق القانون المباشر',
-          'إهمال شروط التعريف في المسألة',
-          'الاعتماد على خطوات غير مكتملة',
-          'لا شيء مما سبق',
-        ],
+      const defaultQuiz = (): QuizQuestionRecord => ({
+        question: '',
+        questionImage: '',
+        options: ['أ', 'ب', 'ج', 'د'],
         correctIndex: 0,
-        explanation: 'الخطوة الصحيحة دائمًا تبدأ بتحقيق شروط القانون الأساسي ثم التعويض الدقيق.',
+        explanation: '',
       });
 
       const resolvedModules =
@@ -718,44 +1016,54 @@ async function startServer() {
                 lessons: lessonsList.map((lesTitle, idx) => ({
                   id: `les-${Date.now()}-${idx + 1}`,
                   title: lesTitle,
-                  durationMinutes: 45,
-                  summary: `شرح تفصيلي لدرس «${lesTitle}» مع أمثلة محلولة وتدريبات شاملة لطلاب ${grade}.`,
-                  keyTakeaways: [
-                    'فهم القوانين الأساسية والتعريفات المرتبطة بالدرس.',
-                    'حل مسائل متدرجة المستوى وفق مواصفات الامتحان.',
-                    'مراجعة أبرز نقاط الفهم الشائعة قبل الاختبار.',
-                  ],
+                  durationMinutes: 0,
+                  summary: '',
+                  keyTakeaways: [],
                   videos: [],
                   attachments: [],
-                  examQuestions: [defaultQuiz(lesTitle)],
+                  examQuestions: [defaultQuiz()],
                   simulationKind: 'math-calculus' as const,
-                  quiz: defaultQuiz(lesTitle),
+                  quiz: defaultQuiz(),
                 })),
               },
             ];
 
-      const totalLessonsCount = resolvedModules.reduce(
-        (acc: number, m: { lessons?: unknown[] }) =>
-          acc + (Array.isArray(m.lessons) ? m.lessons.length : 0),
+      const totalMinutes = resolvedModules.reduce(
+        (acc: number, m: { lessons?: CustomCourseLessonRecord[] }) =>
+          acc +
+          (Array.isArray(m.lessons)
+            ? m.lessons.reduce((s, l) => s + (Number(l.durationMinutes) || 0), 0)
+            : 0),
         0
       );
+
+      const catalog = await ensureCatalogDb();
+      const linkedTeacher = catalog.teachers.find((t) => t.id === instructorId);
+      const resolvedCategory =
+        category && category !== 'محتوى المنهج'
+          ? normalizeSubjectCategory(category)
+          : linkedTeacher
+            ? normalizeSubjectCategory(linkedTeacher.subject)
+            : 'Mathematics';
 
       const newCourse: CustomCourseRecord = {
         id: courseId,
         title,
-        subtitle: subtitle || `شرح وتطبيقات ${title} لطلاب ${grade}.`,
+        subtitle: subtitle || '',
         grade,
-        category,
+        category: resolvedCategory,
         studyMode,
         priceEgp,
-        totalHours: Math.max(4, totalLessonsCount * 2),
+        totalHours: totalMinutes > 0 ? Math.max(1, Math.round(totalMinutes / 60)) : 0,
         instructorId,
-        image: image || '/src/assets/images/course_math_calculus_1794779284413.jpg',
+        image:
+          image ||
+          linkedTeacher?.image ||
+          '/src/assets/images/course_math_calculus_1794779284413.jpg',
         fallbackTitle: title,
         modules: resolvedModules,
       };
 
-      const catalog = await ensureCatalogDb();
       catalog.customCourses.unshift(newCourse);
       await saveCatalogDb(catalog);
       res.status(201).json({ course: newCourse });
@@ -782,29 +1090,45 @@ async function startServer() {
           return;
         }
 
-        const totalLessonsCount = body.modules.reduce(
-          (acc, m) => acc + (Array.isArray(m.lessons) ? m.lessons.length : 0),
+        const totalMinutes = body.modules.reduce(
+          (acc, m) =>
+            acc +
+            (Array.isArray(m.lessons)
+              ? m.lessons.reduce((s, l) => s + (Number(l.durationMinutes) || 0), 0)
+              : 0),
           0
         );
+
+        const catalog = await ensureCatalogDb();
+        const linkedTeacher = catalog.teachers.find((t) => t.id === instructorId);
+        const rawCategory = String(body.category ?? '').trim();
+        const resolvedCategory =
+          rawCategory && rawCategory !== 'محتوى المنهج'
+            ? normalizeSubjectCategory(rawCategory)
+            : linkedTeacher
+              ? normalizeSubjectCategory(linkedTeacher.subject)
+              : 'Mathematics';
 
         const updatedCourse: CustomCourseRecord = {
           id: courseId,
           title,
-          subtitle: String(body.subtitle ?? '').trim() || title,
+          subtitle: String(body.subtitle ?? '').trim(),
           grade,
-          category: String(body.category ?? '').trim() || 'محتوى المنهج',
+          category: resolvedCategory,
           studyMode: body.studyMode === 'أونلاين' ? 'أونلاين' : 'سنتر وأونلاين',
           priceEgp: Number(body.priceEgp) || 0,
-          totalHours: Number(body.totalHours) || Math.max(2, totalLessonsCount * 2),
+          totalHours:
+            totalMinutes > 0
+              ? Math.max(1, Math.round(totalMinutes / 60))
+              : Number(body.totalHours) || 0,
           instructorId,
           image:
             String(body.image ?? '').trim() ||
+            linkedTeacher?.image ||
             '/src/assets/images/course_math_calculus_1794779284413.jpg',
           fallbackTitle: String(body.fallbackTitle ?? '').trim() || title,
           modules: body.modules,
         };
-
-        const catalog = await ensureCatalogDb();
         const existingIdx = catalog.customCourses.findIndex((c) => c.id === courseId);
         if (existingIdx >= 0) {
           catalog.customCourses[existingIdx] = updatedCourse;
@@ -825,8 +1149,15 @@ async function startServer() {
     requireSupervisor,
     async (req: Request, res: Response) => {
       try {
+        const targetId = req.params.id;
         const catalog = await ensureCatalogDb();
-        catalog.customCourses = catalog.customCourses.filter((c) => c.id !== req.params.id);
+        catalog.customCourses = catalog.customCourses.filter((c) => c.id !== targetId);
+        if (
+          COURSES.some((c) => c.id === targetId) &&
+          !catalog.deletedCourseIds.includes(targetId)
+        ) {
+          catalog.deletedCourseIds.push(targetId);
+        }
         await saveCatalogDb(catalog);
         res.json({ ok: true });
       } catch (err) {

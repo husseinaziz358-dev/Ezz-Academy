@@ -4,6 +4,14 @@ export type EducationalStage =
   | 'الصف الثالث الثانوي'
   | 'البكالوريا';
 
+export interface StudentNotification {
+  id: string;
+  title: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
+}
+
 export interface StudentRecord {
   id: string;
   studentName: string;
@@ -20,6 +28,11 @@ export interface StudentRecord {
   notesByLesson: Record<string, string>;
   supervisorNotes: string;
   attendanceRate: number;
+  attendanceDates?: Record<string, string>;
+  walletBalance?: number;
+  isBlocked?: boolean;
+  activeDeviceIds?: string[];
+  notifications?: StudentNotification[];
   createdAt: string;
   updatedAt: string;
 }

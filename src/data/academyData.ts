@@ -4,12 +4,61 @@ export type GradeStage =
   | 'الصف الثالث الثانوي'
   | 'البكالوريا';
 
-export type CourseCategory =
-  | 'رياضيات (عربي)'
-  | 'Mathematics (لغات)'
-  | 'مراجعات الإنقاذ والشوامل'
-  | 'البرمجة والذكاء الاصطناعي'
-  | string;
+export const PLATFORM_SUBJECTS = [
+  'إنجليزي',
+  'عربي',
+  'Mathematics',
+  'Physics',
+  'Chemistry',
+  'Integrated Science',
+  'فرنساوي',
+] as const;
+
+export type PlatformSubject = (typeof PLATFORM_SUBJECTS)[number];
+
+export type CourseCategory = PlatformSubject | string;
+
+export function normalizeSubjectCategory(raw: string): string {
+  const val = (raw || '').trim().toLowerCase();
+  if (!val) return '';
+  if (
+    val.includes('انجليز') ||
+    val.includes('إنجليز') ||
+    val.includes('english')
+  ) {
+    return 'إنجليزي';
+  }
+  if (
+    val.includes('عرب') ||
+    val.includes('arabic')
+  ) {
+    return 'عربي';
+  }
+  if (
+    val.includes('math') ||
+    val.includes('رياضيات') ||
+    val.includes('تفاضل') ||
+    val.includes('جبر') ||
+    val.includes('إحصاء') ||
+    val.includes('استاتيكا') ||
+    val.includes('ديناميكا')
+  ) {
+    return 'Mathematics';
+  }
+  if (val.includes('phys') || val.includes('فيزياء')) {
+    return 'Physics';
+  }
+  if (val.includes('chem') || val.includes('كيمياء')) {
+    return 'Chemistry';
+  }
+  if (val.includes('integrated') || val.includes('متكاملة') || val.includes('science')) {
+    return 'Integrated Science';
+  }
+  if (val.includes('فرنس') || val.includes('french')) {
+    return 'فرنساوي';
+  }
+  return raw.trim();
+}
 
 export type StudyMode = 'أونلاين' | 'سنتر وأونلاين';
 
@@ -19,10 +68,11 @@ export type SimulationKind =
   | 'web-architecture';
 
 export interface QuizQuestion {
-  question: string;
+  question?: string;
+  questionImage?: string;
   options: string[];
   correctIndex: number;
-  explanation: string;
+  explanation?: string;
 }
 
 export interface LessonVideo {
@@ -30,6 +80,7 @@ export interface LessonVideo {
   title: string;
   url: string;
   sourceType: 'link' | 'upload';
+  durationSeconds?: number;
 }
 
 export interface LessonAttachment {

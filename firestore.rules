@@ -66,6 +66,10 @@ service cloud.firestore {
         'notesByLesson',
         'supervisorNotes',
         'attendanceRate',
+        'attendanceDates',
+        'walletBalance',
+        'isBlocked',
+        'activeDeviceIds',
         'createdAt',
         'updatedAt'
       ])
@@ -99,6 +103,10 @@ service cloud.firestore {
       && data.attendanceRate is int
       && data.attendanceRate >= 0
       && data.attendanceRate <= 100
+      && (!('attendanceDates' in data) || (data.attendanceDates is map && data.attendanceDates.size() <= 200))
+      && (!('walletBalance' in data) || (data.walletBalance is int && data.walletBalance >= 0 && data.walletBalance <= 1000000))
+      && (!('isBlocked' in data) || data.isBlocked is bool)
+      && (!('activeDeviceIds' in data) || (data.activeDeviceIds is list && data.activeDeviceIds.size() <= 20 && (data.activeDeviceIds.size() == 0 || data.activeDeviceIds[0] is string)))
       && data.createdAt is timestamp
       && data.updatedAt is timestamp;
     }
@@ -144,6 +152,37 @@ service cloud.firestore {
       && data.updatedAt is timestamp;
     }
 
+    function isValidStudentNotification(data, studentUid, notifId) {
+      return data.keys().hasAll([
+        'id',
+        'studentUid',
+        'title',
+        'message',
+        'read',
+        'createdAt'
+      ])
+      && data.keys().hasOnly([
+        'id',
+        'studentUid',
+        'title',
+        'message',
+        'read',
+        'createdAt'
+      ])
+      && isValidId(data.id)
+      && data.id == notifId
+      && isValidId(data.studentUid)
+      && data.studentUid == studentUid
+      && data.title is string
+      && data.title.size() >= 2
+      && data.title.size() <= 120
+      && data.message is string
+      && data.message.size() >= 2
+      && data.message.size() <= 500
+      && data.read is bool
+      && data.createdAt is timestamp;
+    }
+
     match /admins/{adminUid} {
       allow get: if isValidId(adminUid) && (isOwner(adminUid) || isAdmin());
       allow list, create, update, delete: if false;
@@ -157,7 +196,9 @@ service cloud.firestore {
         && isValidStudent(incoming(), studentUid)
         && incoming().uid == request.auth.uid
         && incoming().supervisorNotes == 'حساب جديد — في انتظار المراجعة الأولى.'
-        && incoming().attendanceRate == 100
+        && incoming().attendanceRate == 0
+        && (!('walletBalance' in incoming()) || incoming().walletBalance == 0)
+        && (!('isBlocked' in incoming()) || incoming().isBlocked == false)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(studentUid)
@@ -169,11 +210,17 @@ service cloud.firestore {
           isAdmin()
           || (
             isOwner(studentUid)
+            && (!('isBlocked' in existing()) || existing().isBlocked == false)
+            && (!('walletBalance' in incoming()) || (!('walletBalance' in existing()) && incoming().walletBalance == 0) || ('walletBalance' in existing() && incoming().walletBalance <= existing().walletBalance))
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'unlockedCourseIds',
               'completedLessonIds',
               'quizAnswers',
               'notesByLesson',
+              'attendanceRate',
+              'attendanceDates',
+              'walletBalance',
+              'activeDeviceIds',
               'updatedAt'
             ])
           )
@@ -209,6 +256,36 @@ service cloud.firestore {
           ])
           && get(/databases/$(database)/documents/students/$(studentUid)).data.uid == studentUid;
         allow delete: if isValidId(studentUid) && docId == 'contact' && isAdmin();
+      }
+
+      match /notifications/{notifId} {
+        allow get: if isValidId(studentUid) && isValidId(notifId) && (isOwner(studentUid) || isAdmin());
+        allow list: if isAdminEmail() || (isVerified() && resource.data.studentUid == request.auth.uid);
+        allow create: if isValidId(studentUid)
+          && isValidId(notifId)
+          && isAdmin()
+          && isValidStudentNotification(incoming(), studentUid, notifId)
+          && incoming().read == false
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/students/$(studentUid));
+        allow update: if isValidId(studentUid)
+          && isValidId(notifId)
+          && isValidStudentNotification(incoming(), studentUid, notifId)
+          && incoming().id == existing().id
+          && incoming().studentUid == existing().studentUid
+          && incoming().title == existing().title
+          && incoming().message == existing().message
+          && incoming().createdAt == existing().createdAt
+          && (
+            isAdmin()
+            || (
+              isOwner(studentUid)
+              && (!('isBlocked' in get(/databases/$(database)/documents/students/$(studentUid)).data) || get(/databases/$(database)/documents/students/$(studentUid)).data.isBlocked == false)
+              && incoming().read == true
+              && incoming().diff(existing()).affectedKeys().hasOnly(['read'])
+            )
+          );
+        allow delete: if isValidId(studentUid) && isValidId(notifId) && isAdmin();
       }
     }
   }

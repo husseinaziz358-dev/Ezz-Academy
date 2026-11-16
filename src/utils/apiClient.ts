@@ -1,8 +1,30 @@
-import { DynamicTeacher, EducationalStage, StudentRecord } from '../types/student';
-import { Course } from '../data/academyData';
+import {
+  DynamicTeacher,
+  EducationalStage,
+  StudentNotification,
+  StudentRecord,
+} from '../types/student';
+import { Course, COURSES, normalizeSubjectCategory } from '../data/academyData';
+import { computeStudentAttendance } from './attendance';
 
-const FALLBACK_DB_KEY = 'ezz_academy_students_fallback_v1';
+const FALLBACK_DB_KEY = 'ezz_academy_students_fallback_v2';
 const FALLBACK_CATALOG_KEY = 'ezz_academy_catalog_v1';
+const DEVICE_ID_KEY = 'ezz_academy_device_id_v1';
+
+export function getOrCreateDeviceId(): string {
+  try {
+    const existing = window.localStorage.getItem(DEVICE_ID_KEY);
+    if (existing && existing.trim().length > 0) return existing.trim();
+    const generated =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? `dev-${crypto.randomUUID()}`
+        : `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    window.localStorage.setItem(DEVICE_ID_KEY, generated);
+    return generated;
+  } catch {
+    return 'dev-browser';
+  }
+}
 
 // SHA-256 hex of 'Husse123##' so no plaintext password is stored in client code
 const SUPERVISOR_PHONE = '01022193514';
@@ -120,67 +142,7 @@ async function sha256Hex(text: string): Promise<string> {
   return pureSha256Hex(text);
 }
 
-const SEED_FALLBACK_STUDENTS: StudentRecord[] = [
-  {
-    id: 'stu-1001',
-    studentName: 'عمر خالد محمود',
-    studentPhone: '01012345678',
-    parentName: 'خالد محمود عبد العزيز',
-    parentPhone: '01099887766',
-    motherName: 'سحر أحمد حسن',
-    stage: 'الصف الثالث الثانوي',
-    specializationType: 'شعبة',
-    specialization: 'علمي رياضة',
-    unlockedCourseIds: ['course-sec3-pure-applied', 'course-sec3-rescue'],
-    completedLessonIds: ['les-sec3-1', 'les-sec3-2'],
-    quizAnswers: { 'les-sec3-1': 0, 'les-sec3-2': 0 },
-    notesByLesson: {
-      'les-sec3-1': 'مراجعة ميل العمودي والنقط الحرجة قبل الامتحان الشامل.',
-    },
-    supervisorNotes: 'طالب ملتزم في حضور السنتر والأونلاين، درجاته في التفاضل ممتازة.',
-    attendanceRate: 96,
-    createdAt: '2026-10-05T10:00:00.000Z',
-    updatedAt: '2026-11-10T14:30:00.000Z',
-  },
-  {
-    id: 'stu-1002',
-    studentName: 'مريم طارق الشريف',
-    studentPhone: '01122334455',
-    parentName: 'طارق الشريف محمد',
-    parentPhone: '01155443322',
-    motherName: 'نادية مصطفى علي',
-    stage: 'البكالوريا',
-    specializationType: 'مسار',
-    specialization: 'مسار الهندسة وعلوم الحاسب',
-    unlockedCourseIds: ['course-sec3-math-lang', 'course-sec-ai-coding'],
-    completedLessonIds: ['les-lang-1', 'les-prog-1'],
-    quizAnswers: { 'les-lang-1': 0 },
-    notesByLesson: {},
-    supervisorNotes: 'متفوقة في مسار الهندسة وعلوم الحاسب وتحتاج متابعة في المعدلات الزمنية.',
-    attendanceRate: 92,
-    createdAt: '2026-10-12T09:15:00.000Z',
-    updatedAt: '2026-11-12T16:20:00.000Z',
-  },
-  {
-    id: 'stu-1003',
-    studentName: 'يوسف إبراهيم سالم',
-    studentPhone: '01234567890',
-    parentName: 'إبراهيم سالم السيد',
-    parentPhone: '01209876543',
-    motherName: 'أمل محمود عبد الله',
-    stage: 'الصف الثاني الثانوي',
-    specializationType: 'شعبة',
-    specialization: 'علمي',
-    unlockedCourseIds: ['course-sec2-math'],
-    completedLessonIds: ['les-sec2-1'],
-    quizAnswers: {},
-    notesByLesson: {},
-    supervisorNotes: 'مطلوب متابعة ولي الأمر لاستكمال اختبارات الحصة الأولى.',
-    attendanceRate: 84,
-    createdAt: '2026-10-20T11:45:00.000Z',
-    updatedAt: '2026-11-13T18:00:00.000Z',
-  },
-];
+const SEED_FALLBACK_STUDENTS: StudentRecord[] = [];
 
 function getLocalStudents(): (StudentRecord & { passwordHash?: string })[] {
   try {
@@ -227,6 +189,7 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
   | { ok: false; error: string }
 > {
   const phone = normalizeDigits(phoneInput);
+  const deviceId = getOrCreateDeviceId();
   const serverRes = await tryServerJson<{
     role?: 'supervisor' | 'student';
     name?: string;
@@ -237,7 +200,7 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
   }>('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ phone, password }),
+    body: JSON.stringify({ phone, password, deviceId }),
   });
 
   if (serverRes) {
@@ -283,16 +246,28 @@ export async function apiLogin(phoneInput: string, password: string): Promise<
   }
 
   const list = getLocalStudents();
-  const student = list.find((s) => s.studentPhone === phone);
-  if (!student) {
+  const idx = list.findIndex((s) => s.studentPhone === phone);
+  if (idx === -1) {
     return { ok: false, error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' };
   }
+  const student = list[idx];
   const hash = await sha256Hex(password);
   const expectedSeedHash = await sha256Hex('123456');
   if (student.passwordHash ? hash !== student.passwordHash : hash !== expectedSeedHash) {
     return { ok: false, error: 'رقم الهاتف أو كلمة المرور غير صحيحة.' };
   }
-  const { passwordHash: _ignored, ...safeStudent } = student;
+  if (student.isBlocked) {
+    return { ok: false, error: 'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.' };
+  }
+  const curDevices = Array.isArray(student.activeDeviceIds) ? student.activeDeviceIds : [];
+  if (!curDevices.includes(deviceId)) {
+    list[idx] = {
+      ...student,
+      activeDeviceIds: [...curDevices, deviceId].slice(0, 20),
+    };
+    saveLocalStudents(list);
+  }
+  const { passwordHash: _ignored, ...safeStudent } = list[idx];
   return {
     ok: true,
     role: 'student',
@@ -314,10 +289,12 @@ export async function apiRegisterStudent(payload: {
   | { ok: true; student: StudentRecord; token: string }
   | { ok: false; error: string }
 > {
+  const deviceId = getOrCreateDeviceId();
   const normalizedPayload = {
     ...payload,
     studentPhone: normalizeDigits(payload.studentPhone),
     parentPhone: normalizeDigits(payload.parentPhone),
+    deviceId,
   };
 
   const serverRes = await tryServerJson<{
@@ -370,7 +347,11 @@ export async function apiRegisterStudent(payload: {
     quizAnswers: {},
     notesByLesson: {},
     supervisorNotes: 'حساب جديد — في انتظار المراجعة الأولى.',
-    attendanceRate: 100,
+    attendanceRate: 0,
+    attendanceDates: {},
+    walletBalance: 0,
+    isBlocked: false,
+    activeDeviceIds: [deviceId],
     createdAt: now,
     updatedAt: now,
   };
@@ -399,9 +380,14 @@ export async function apiFetchSupervisorStudents(token: string): Promise<
     return { ok: true, students: serverRes.data.students || [] };
   }
 
+  const catalog = getLocalCatalog();
+  const merged = mergeCatalogCourses(catalog.customCourses, COURSES);
   return {
     ok: true,
-    students: getLocalStudents().map(({ passwordHash: _ignored, ...safe }) => safe),
+    students: getLocalStudents().map(({ passwordHash: _ignored, ...safe }) => ({
+      ...safe,
+      attendanceRate: computeStudentAttendance(safe, merged).rate,
+    })),
   };
 }
 
@@ -409,9 +395,13 @@ export async function apiUpdateSupervisorStudent(
   studentId: string,
   token: string,
   updates: {
-    supervisorNotes: string;
-    attendanceRate: number;
-    unlockedCourseIds: string[];
+    supervisorNotes?: string;
+    attendanceRate?: number;
+    unlockedCourseIds?: string[];
+    walletBalance?: number;
+    addWalletAmount?: number;
+    isBlocked?: boolean;
+    resetDevices?: boolean;
   }
 ): Promise<{ ok: true; student: StudentRecord } | { ok: false; error: string }> {
   const serverRes = await tryServerJson<{ student?: StudentRecord; error?: string }>(
@@ -436,9 +426,33 @@ export async function apiUpdateSupervisorStudent(
   const list = getLocalStudents();
   const idx = list.findIndex((s) => s.id === studentId);
   if (idx === -1) return { ok: false, error: 'الطالب غير موجود.' };
+  const catalog = getLocalCatalog();
+  const merged = mergeCatalogCourses(catalog.customCourses, COURSES, catalog.deletedCourseIds);
+  const nextUnlocked = updates.unlockedCourseIds ?? list[idx].unlockedCourseIds;
+  const autoAttendance = computeStudentAttendance(
+    {
+      unlockedCourseIds: nextUnlocked,
+      completedLessonIds: list[idx].completedLessonIds,
+      stage: list[idx].stage,
+    },
+    merged
+  );
+  let nextWallet = Math.max(0, Number(list[idx].walletBalance) || 0);
+  if (typeof updates.walletBalance === 'number' && Number.isFinite(updates.walletBalance)) {
+    nextWallet = Math.max(0, Math.round(updates.walletBalance));
+  }
+  if (typeof updates.addWalletAmount === 'number' && Number.isFinite(updates.addWalletAmount)) {
+    nextWallet = Math.max(0, Math.round(nextWallet + updates.addWalletAmount));
+  }
   const updated = {
     ...list[idx],
-    ...updates,
+    supervisorNotes: updates.supervisorNotes ?? list[idx].supervisorNotes,
+    unlockedCourseIds: nextUnlocked,
+    attendanceRate: autoAttendance.rate,
+    walletBalance: nextWallet,
+    isBlocked:
+      typeof updates.isBlocked === 'boolean' ? updates.isBlocked : Boolean(list[idx].isBlocked),
+    activeDeviceIds: updates.resetDevices ? [] : list[idx].activeDeviceIds ?? [],
     updatedAt: new Date().toISOString(),
   };
   list[idx] = updated;
@@ -455,8 +469,11 @@ export async function apiSyncStudentProgress(
     completedLessonIds: string[];
     notesByLesson: Record<string, string>;
     quizAnswers: Record<string, number>;
+    attendanceRate?: number;
+    attendanceDates?: Record<string, string>;
   }
 ): Promise<void> {
+  const deviceId = getOrCreateDeviceId();
   const serverRes = await tryServerJson<{ student?: StudentRecord }>(
     `/api/students/${studentId}/progress`,
     {
@@ -465,7 +482,7 @@ export async function apiSyncStudentProgress(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify(updates),
+      body: JSON.stringify({ ...updates, deviceId }),
     }
   );
 
@@ -474,12 +491,208 @@ export async function apiSyncStudentProgress(
   const list = getLocalStudents();
   const idx = list.findIndex((s) => s.id === studentId);
   if (idx === -1) return;
+  const catalog = getLocalCatalog();
+  const merged = mergeCatalogCourses(catalog.customCourses, COURSES, catalog.deletedCourseIds);
+  const autoAttendance = computeStudentAttendance(
+    {
+      unlockedCourseIds: updates.unlockedCourseIds,
+      completedLessonIds: updates.completedLessonIds,
+      stage: list[idx].stage,
+    },
+    merged
+  );
   list[idx] = {
     ...list[idx],
     ...updates,
+    attendanceRate: updates.attendanceRate ?? autoAttendance.rate,
+    attendanceDates: updates.attendanceDates ?? list[idx].attendanceDates ?? {},
     updatedAt: new Date().toISOString(),
   };
   saveLocalStudents(list);
+}
+
+export async function apiFetchStudentProfile(
+  studentId: string,
+  token: string
+): Promise<StudentRecord | null> {
+  const deviceId = getOrCreateDeviceId();
+  const serverRes = await tryServerJson<{ student?: StudentRecord }>(
+    `/api/students/${studentId}/me?deviceId=${encodeURIComponent(deviceId)}`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+  if (serverRes?.ok && serverRes.data.student) {
+    return serverRes.data.student;
+  }
+  const found = getLocalStudents().find((s) => s.id === studentId);
+  if (!found) return null;
+  const { passwordHash: _ignored, ...safeStudent } = found;
+  return safeStudent;
+}
+
+export async function apiPurchaseCourseWithWallet(
+  studentId: string,
+  token: string,
+  courseId: string
+): Promise<{ ok: true; student: StudentRecord } | { ok: false; error: string }> {
+  const serverRes = await tryServerJson<{ student?: StudentRecord; error?: string }>(
+    `/api/students/${studentId}/purchase-course`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ courseId }),
+    }
+  );
+  if (serverRes) {
+    if (!serverRes.ok || !serverRes.data.student) {
+      return { ok: false, error: serverRes.data.error || 'تعذر إتمام شراء الكورس.' };
+    }
+    return { ok: true, student: serverRes.data.student };
+  }
+
+  // Fallback for static preview
+  const list = getLocalStudents();
+  const idx = list.findIndex((s) => s.id === studentId);
+  if (idx === -1) return { ok: false, error: 'الحساب غير موجود.' };
+  const stu = list[idx];
+  if (stu.isBlocked) return { ok: false, error: 'تم حظر هذا الحساب من قِبل الإدارة.' };
+  const catalog = getLocalCatalog();
+  const merged = mergeCatalogCourses(catalog.customCourses, COURSES, catalog.deletedCourseIds);
+  const course = merged.find((c) => c.id === courseId);
+  if (!course) return { ok: false, error: 'الكورس غير موجود.' };
+  if (stu.unlockedCourseIds.includes(courseId)) {
+    const { passwordHash: _ignored, ...safe } = stu;
+    return { ok: true, student: safe };
+  }
+  const balance = Math.max(0, Number(stu.walletBalance) || 0);
+  const price = Math.max(0, Number(course.priceEgp) || 0);
+  if (balance < price) {
+    return {
+      ok: false,
+      error: `رصيد المحفظة غير كافٍ. الرصيد الحالي ${balance} ج.م وسعر الكورس ${price} ج.م.`,
+    };
+  }
+  const nextUnlocked = [...stu.unlockedCourseIds, courseId];
+  const autoAttendance = computeStudentAttendance(
+    { unlockedCourseIds: nextUnlocked, completedLessonIds: stu.completedLessonIds, stage: stu.stage },
+    merged
+  );
+  const updated = {
+    ...stu,
+    walletBalance: balance - price,
+    unlockedCourseIds: nextUnlocked,
+    attendanceRate: autoAttendance.rate,
+    updatedAt: new Date().toISOString(),
+  };
+  list[idx] = updated;
+  saveLocalStudents(list);
+  const { passwordHash: _ignored, ...safe } = updated;
+  return { ok: true, student: safe };
+}
+
+export async function apiSendSupervisorAlerts(
+  token: string,
+  payload: { studentIds: string[]; title: string; message: string }
+): Promise<
+  | { ok: true; sentCount: number; students?: StudentRecord[] }
+  | { ok: false; error: string }
+> {
+  const serverRes = await tryServerJson<{
+    ok?: boolean;
+    sentCount?: number;
+    students?: StudentRecord[];
+    error?: string;
+  }>('/api/supervisor/alerts', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (serverRes) {
+    if (!serverRes.ok) {
+      return { ok: false, error: serverRes.data.error || 'تعذر إرسال التنبيه.' };
+    }
+    return {
+      ok: true,
+      sentCount: serverRes.data.sentCount ?? payload.studentIds.length,
+      students: serverRes.data.students,
+    };
+  }
+
+  // Fallback for static preview without backend server
+  const list = getLocalStudents();
+  const idSet = new Set(payload.studentIds);
+  const now = new Date().toISOString();
+  let sentCount = 0;
+  const nextList = list.map((stu) => {
+    if (!idSet.has(stu.id)) return stu;
+    sentCount += 1;
+    const notif: StudentNotification = {
+      id: `notif-${Date.now()}-${sentCount}`,
+      title: payload.title.trim(),
+      message: payload.message.trim(),
+      read: false,
+      createdAt: now,
+    };
+    const existingNotifs = Array.isArray(stu.notifications) ? stu.notifications : [];
+    return {
+      ...stu,
+      notifications: [notif, ...existingNotifs].slice(0, 30),
+      updatedAt: now,
+    };
+  });
+  saveLocalStudents(nextList);
+  const catalog = getLocalCatalog();
+  const merged = mergeCatalogCourses(catalog.customCourses, COURSES, catalog.deletedCourseIds);
+  const safeStudents = nextList.map(({ passwordHash: _ignored, ...safe }) => ({
+    ...safe,
+    attendanceRate: computeStudentAttendance(safe, merged).rate,
+  }));
+  return { ok: true, sentCount, students: safeStudents };
+}
+
+export async function apiMarkStudentNotificationsRead(
+  studentId: string,
+  token: string,
+  notificationIds?: string[]
+): Promise<StudentNotification[] | null> {
+  const serverRes = await tryServerJson<{ student?: StudentRecord }>(
+    `/api/students/${studentId}/notifications/read`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ notificationIds }),
+    }
+  );
+  if (serverRes?.ok && serverRes.data.student) {
+    return serverRes.data.student.notifications ?? [];
+  }
+
+  const list = getLocalStudents();
+  const idx = list.findIndex((s) => s.id === studentId);
+  if (idx === -1) return null;
+  const targetIds =
+    notificationIds && notificationIds.length > 0 ? new Set(notificationIds) : null;
+  const nextNotifs = (list[idx].notifications ?? []).map((n) =>
+    !targetIds || targetIds.has(n.id) ? { ...n, read: true } : n
+  );
+  list[idx] = {
+    ...list[idx],
+    notifications: nextNotifs,
+    updatedAt: new Date().toISOString(),
+  };
+  saveLocalStudents(list);
+  return nextNotifs;
 }
 
 export async function apiLookupParent(phoneInput: string): Promise<
@@ -514,6 +727,7 @@ export async function apiLookupParent(phoneInput: string): Promise<
 interface LocalCatalog {
   teachers: DynamicTeacher[];
   customCourses: Course[];
+  deletedCourseIds: string[];
 }
 
 function getLocalCatalog(): LocalCatalog {
@@ -524,12 +738,15 @@ function getLocalCatalog(): LocalCatalog {
       return {
         teachers: Array.isArray(parsed.teachers) ? parsed.teachers : [],
         customCourses: Array.isArray(parsed.customCourses) ? parsed.customCourses : [],
+        deletedCourseIds: Array.isArray(parsed.deletedCourseIds)
+          ? parsed.deletedCourseIds
+          : [],
       };
     }
   } catch {
     // Ignore storage read error
   }
-  return { teachers: [], customCourses: [] };
+  return { teachers: [], customCourses: [], deletedCourseIds: [] };
 }
 
 function saveLocalCatalog(catalog: LocalCatalog) {
@@ -541,12 +758,15 @@ function saveLocalCatalog(catalog: LocalCatalog) {
 }
 
 export async function apiFetchAcademyCatalog(): Promise<LocalCatalog> {
-  const serverRes = await tryServerJson<LocalCatalog>('/api/academy/catalog');
+  const serverRes = await tryServerJson<Partial<LocalCatalog>>('/api/academy/catalog');
   if (serverRes && serverRes.ok) {
     return {
       teachers: Array.isArray(serverRes.data.teachers) ? serverRes.data.teachers : [],
       customCourses: Array.isArray(serverRes.data.customCourses)
         ? serverRes.data.customCourses
+        : [],
+      deletedCourseIds: Array.isArray(serverRes.data.deletedCourseIds)
+        ? serverRes.data.deletedCourseIds
         : [],
     };
   }
@@ -612,12 +832,18 @@ export async function apiDeleteTeacher(token: string, teacherId: string): Promis
 
 export function mergeCatalogCourses(
   customCourses: Course[],
-  builtInCourses: Course[]
+  builtInCourses: Course[],
+  deletedCourseIds: string[] = []
 ): Course[] {
+  const deletedSet = new Set(deletedCourseIds);
   const overrideMap = new Map(customCourses.map((c) => [c.id, c]));
   const builtInIds = new Set(builtInCourses.map((c) => c.id));
-  const customOnly = customCourses.filter((c) => !builtInIds.has(c.id));
-  const mergedBuiltIn = builtInCourses.map((c) => overrideMap.get(c.id) ?? c);
+  const customOnly = customCourses.filter(
+    (c) => !builtInIds.has(c.id) && !deletedSet.has(c.id)
+  );
+  const mergedBuiltIn = builtInCourses
+    .filter((c) => !deletedSet.has(c.id))
+    .map((c) => overrideMap.get(c.id) ?? c);
   return [...customOnly, ...mergedBuiltIn];
 }
 
@@ -705,13 +931,12 @@ export async function apiAddCourse(
   const course: Course = {
     id: `course-custom-${Date.now()}`,
     title: payload.title.trim(),
-    subtitle:
-      payload.subtitle.trim() || `شرح وتطبيقات ${payload.title.trim()} لطلاب ${payload.grade}.`,
+    subtitle: payload.subtitle.trim(),
     grade: payload.grade,
-    category: payload.category.trim() || 'محتوى المنهج',
+    category: normalizeSubjectCategory(payload.category) || 'Mathematics',
     studyMode: payload.studyMode,
     priceEgp: payload.priceEgp || 250,
-    totalHours: Math.max(4, lessonsList.length * 2),
+    totalHours: 0,
     instructorId: payload.instructorId,
     image: payload.image || '/src/assets/images/course_math_calculus_1794779284413.jpg',
     fallbackTitle: payload.title.trim(),
@@ -721,26 +946,18 @@ export async function apiAddCourse(
         title: 'الحصص الدراسية',
         lessons: lessonsList.map((lesTitle, idx) => {
           const defaultQ = {
-            question: `اختبار سريع على: ${lesTitle}`,
-            options: [
-              'مراجعة المفهوم الأساسي وتطبيق القانون المباشر',
-              'إهمال شروط التعريف في المسألة',
-              'الاعتماد على خطوات غير مكتملة',
-              'لا شيء مما سبق',
-            ],
+            question: '',
+            questionImage: '',
+            options: ['أ', 'ب', 'ج', 'د'],
             correctIndex: 0,
-            explanation: 'الخطوة الصحيحة دائمًا تبدأ بتحقيق شروط القانون الأساسي ثم التعويض الدقيق.',
+            explanation: '',
           };
           return {
             id: `les-${Date.now()}-${idx + 1}`,
             title: lesTitle,
-            durationMinutes: 45,
-            summary: `شرح تفصيلي لدرس «${lesTitle}» مع أمثلة محلولة وتدريبات شاملة لطلاب ${payload.grade}.`,
-            keyTakeaways: [
-              'فهم القوانين الأساسية والتعريفات المرتبطة بالدرس.',
-              'حل مسائل متدرجة المستوى وفق مواصفات الامتحان.',
-              'مراجعة أبرز نقاط الفهم الشائعة قبل الاختبار.',
-            ],
+            durationMinutes: 0,
+            summary: '',
+            keyTakeaways: [],
             videos: [],
             attachments: [],
             examQuestions: [defaultQ],
@@ -803,6 +1020,12 @@ export async function apiDeleteCourse(token: string, courseId: string): Promise<
 
   const catalog = getLocalCatalog();
   catalog.customCourses = catalog.customCourses.filter((c) => c.id !== courseId);
+  if (
+    COURSES.some((c) => c.id === courseId) &&
+    !catalog.deletedCourseIds.includes(courseId)
+  ) {
+    catalog.deletedCourseIds.push(courseId);
+  }
   saveLocalCatalog(catalog);
   return true;
 }

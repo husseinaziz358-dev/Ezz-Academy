@@ -4,13 +4,15 @@ import {
   doc,
   getDoc,
   getDocs,
+  query,
   serverTimestamp,
   Timestamp,
   updateDoc,
+  where,
   writeBatch,
 } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
-import { StudentRecord } from '../types/student';
+import { StudentNotification, StudentRecord } from '../types/student';
 import { normalizeDigits } from '../utils/apiClient';
 
 const ADMIN_EMAIL = 'fatmasoltan1972@gmail.com';
@@ -43,7 +45,8 @@ function sanitizePhone(val: string): string {
 function mapFirestoreToStudentRecord(
   uid: string,
   profileData: Record<string, unknown>,
-  contactData?: Record<string, unknown>
+  contactData?: Record<string, unknown>,
+  notifications: StudentNotification[] = []
 ): StudentRecord {
   return {
     id: uid,
@@ -72,10 +75,49 @@ function mapFirestoreToStudentRecord(
         : {},
     supervisorNotes: String(profileData.supervisorNotes ?? ''),
     attendanceRate:
-      typeof profileData.attendanceRate === 'number' ? profileData.attendanceRate : 100,
+      typeof profileData.attendanceRate === 'number' ? profileData.attendanceRate : 0,
+    attendanceDates:
+      profileData.attendanceDates && typeof profileData.attendanceDates === 'object'
+        ? (profileData.attendanceDates as Record<string, string>)
+        : {},
+    walletBalance:
+      typeof profileData.walletBalance === 'number' ? profileData.walletBalance : 0,
+    isBlocked: profileData.isBlocked === true,
+    activeDeviceIds: Array.isArray(profileData.activeDeviceIds)
+      ? (profileData.activeDeviceIds as string[])
+      : [],
+    notifications,
     createdAt: toIsoString(profileData.createdAt),
     updatedAt: toIsoString(profileData.updatedAt),
   };
+}
+
+export async function fetchFirebaseStudentNotifications(
+  uid: string
+): Promise<StudentNotification[]> {
+  if (!ID_PATTERN.test(uid)) return [];
+  const notifPath = `students/${uid}/notifications`;
+  try {
+    const q = query(
+      collection(db, 'students', uid, 'notifications'),
+      where('studentUid', '==', uid)
+    );
+    const snap = await getDocs(q);
+    return snap.docs
+      .map((d) => {
+        const data = d.data() as Record<string, unknown>;
+        return {
+          id: String(data.id ?? d.id),
+          title: String(data.title ?? ''),
+          message: String(data.message ?? ''),
+          read: data.read === true,
+          createdAt: toIsoString(data.createdAt),
+        };
+      })
+      .sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, notifPath);
+  }
 }
 
 export async function loadFirebaseStudentByUid(uid: string): Promise<StudentRecord | null> {
@@ -97,10 +139,18 @@ export async function loadFirebaseStudentByUid(uid: string): Promise<StudentReco
     handleFirestoreError(err, OperationType.GET, contactPath);
   }
 
+  let notifications: StudentNotification[] = [];
+  try {
+    notifications = await fetchFirebaseStudentNotifications(uid);
+  } catch {
+    notifications = [];
+  }
+
   return mapFirestoreToStudentRecord(
     uid,
     profileSnap.data() as Record<string, unknown>,
-    contactSnap.exists() ? (contactSnap.data() as Record<string, unknown>) : undefined
+    contactSnap.exists() ? (contactSnap.data() as Record<string, unknown>) : undefined,
+    notifications
   );
 }
 
@@ -153,6 +203,13 @@ export async function signInWithGooglePopup(): Promise<
 
     const existing = await loadFirebaseStudentByUid(user.uid);
     if (existing) {
+      if (existing.isBlocked) {
+        await signOut(auth).catch(() => {});
+        return {
+          ok: false,
+          error: 'تم حظر هذا الحساب من قِبل الإدارة. تواصل مع الدعم الفني.',
+        };
+      }
       return {
         ok: true,
         role: 'student',
@@ -244,7 +301,11 @@ export async function createFirebaseStudentProfile(
     quizAnswers: {},
     notesByLesson: {},
     supervisorNotes,
-    attendanceRate: 100,
+    attendanceRate: 0,
+    attendanceDates: {},
+    walletBalance: 0,
+    isBlocked: false,
+    activeDeviceIds: [],
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -288,7 +349,11 @@ export async function createFirebaseStudentProfile(
       quizAnswers: {},
       notesByLesson: {},
       supervisorNotes,
-      attendanceRate: 100,
+      attendanceRate: 0,
+      attendanceDates: {},
+      walletBalance: 0,
+      isBlocked: false,
+      activeDeviceIds: [],
       createdAt: now,
       updatedAt: now,
     },
@@ -302,20 +367,44 @@ export async function syncFirebaseStudentProgress(
     completedLessonIds: string[];
     notesByLesson: Record<string, string>;
     quizAnswers: Record<string, number>;
+    attendanceRate: number;
+    attendanceDates?: Record<string, string>;
+    walletBalance?: number;
+    activeDeviceIds?: string[];
   }
 ): Promise<void> {
   if (!auth.currentUser || auth.currentUser.uid !== uid || !ID_PATTERN.test(uid)) {
     return;
   }
   const path = `students/${uid}`;
+  const cleanAttendance = Math.max(0, Math.min(100, Math.round(updates.attendanceRate)));
+  const cleanAttendanceDates: Record<string, string> = {};
+  if (updates.attendanceDates && typeof updates.attendanceDates === 'object') {
+    for (const [k, v] of Object.entries(updates.attendanceDates).slice(0, 200)) {
+      if (typeof k === 'string' && typeof v === 'string' && k.trim() && v.trim()) {
+        cleanAttendanceDates[k.slice(0, 128)] = v.trim().slice(0, 32);
+      }
+    }
+  }
+  const updatePayload: Record<string, unknown> = {
+    unlockedCourseIds: updates.unlockedCourseIds.slice(0, 20),
+    completedLessonIds: updates.completedLessonIds.slice(0, 200),
+    notesByLesson: updates.notesByLesson,
+    quizAnswers: updates.quizAnswers,
+    attendanceRate: cleanAttendance,
+    attendanceDates: cleanAttendanceDates,
+    updatedAt: serverTimestamp(),
+  };
+  if (typeof updates.walletBalance === 'number' && Number.isFinite(updates.walletBalance)) {
+    updatePayload.walletBalance = Math.max(0, Math.round(updates.walletBalance));
+  }
+  if (Array.isArray(updates.activeDeviceIds)) {
+    updatePayload.activeDeviceIds = updates.activeDeviceIds
+      .filter((d) => typeof d === 'string' && d.trim().length > 0)
+      .slice(0, 20);
+  }
   try {
-    await updateDoc(doc(db, 'students', uid), {
-      unlockedCourseIds: updates.unlockedCourseIds.slice(0, 20),
-      completedLessonIds: updates.completedLessonIds.slice(0, 200),
-      notesByLesson: updates.notesByLesson,
-      quizAnswers: updates.quizAnswers,
-      updatedAt: serverTimestamp(),
-    });
+    await updateDoc(doc(db, 'students', uid), updatePayload);
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);
   }
@@ -344,10 +433,17 @@ export async function fetchAllFirebaseStudents(): Promise<StudentRecord[]> {
       } catch (err) {
         handleFirestoreError(err, OperationType.GET, contactPath);
       }
+      let notifications: StudentNotification[] = [];
+      try {
+        notifications = await fetchFirebaseStudentNotifications(studentDoc.id);
+      } catch {
+        notifications = [];
+      }
       return mapFirestoreToStudentRecord(
         studentDoc.id,
         studentDoc.data() as Record<string, unknown>,
-        contactData
+        contactData,
+        notifications
       );
     })
   );
@@ -358,26 +454,42 @@ export async function fetchAllFirebaseStudents(): Promise<StudentRecord[]> {
 export async function updateFirebaseStudentBySupervisor(
   studentUid: string,
   updates: {
-    supervisorNotes: string;
-    attendanceRate: number;
-    unlockedCourseIds: string[];
+    supervisorNotes?: string;
+    attendanceRate?: number;
+    unlockedCourseIds?: string[];
+    walletBalance?: number;
+    isBlocked?: boolean;
+    activeDeviceIds?: string[];
   }
 ): Promise<StudentRecord> {
   if (!ID_PATTERN.test(studentUid)) {
     throw new Error('معرف الطالب غير صالح.');
   }
   const path = `students/${studentUid}`;
-  const cleanNotes = sanitizeText(updates.supervisorNotes, MAX_NOTES_LENGTH);
-  const cleanAttendance = Math.max(0, Math.min(100, Math.round(updates.attendanceRate)));
-  const cleanCourses = updates.unlockedCourseIds.slice(0, 20);
+  const updatePayload: Record<string, unknown> = {
+    updatedAt: serverTimestamp(),
+  };
+  if (typeof updates.supervisorNotes === 'string') {
+    updatePayload.supervisorNotes = sanitizeText(updates.supervisorNotes, MAX_NOTES_LENGTH);
+  }
+  if (typeof updates.attendanceRate === 'number') {
+    updatePayload.attendanceRate = Math.max(0, Math.min(100, Math.round(updates.attendanceRate)));
+  }
+  if (Array.isArray(updates.unlockedCourseIds)) {
+    updatePayload.unlockedCourseIds = updates.unlockedCourseIds.slice(0, 20);
+  }
+  if (typeof updates.walletBalance === 'number' && Number.isFinite(updates.walletBalance)) {
+    updatePayload.walletBalance = Math.max(0, Math.min(1000000, Math.round(updates.walletBalance)));
+  }
+  if (typeof updates.isBlocked === 'boolean') {
+    updatePayload.isBlocked = updates.isBlocked;
+  }
+  if (Array.isArray(updates.activeDeviceIds)) {
+    updatePayload.activeDeviceIds = updates.activeDeviceIds.slice(0, 20);
+  }
 
   try {
-    await updateDoc(doc(db, 'students', studentUid), {
-      supervisorNotes: cleanNotes,
-      attendanceRate: cleanAttendance,
-      unlockedCourseIds: cleanCourses,
-      updatedAt: serverTimestamp(),
-    });
+    await updateDoc(doc(db, 'students', studentUid), updatePayload);
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);
   }
@@ -387,6 +499,65 @@ export async function updateFirebaseStudentBySupervisor(
     throw new Error('تعذر قراءة ملف الطالب بعد التحديث.');
   }
   return refreshed;
+}
+
+export async function sendFirebaseStudentAlerts(
+  studentUids: string[],
+  payload: { title: string; message: string }
+): Promise<number> {
+  const cleanTitle = sanitizeText(payload.title, 120);
+  const cleanMessage = sanitizeText(payload.message, 500);
+  if (cleanTitle.length < 2 || cleanMessage.length < 2) {
+    throw new Error('يرجى إدخال عنوان ونص التنبيه.');
+  }
+  const validUids = studentUids.filter((id) => ID_PATTERN.test(id));
+  if (validUids.length === 0) return 0;
+
+  const batch = writeBatch(db);
+  const ts = Date.now();
+  validUids.forEach((uid, idx) => {
+    const notifId = `notif-${ts}-${idx}`;
+    const ref = doc(db, 'students', uid, 'notifications', notifId);
+    batch.set(ref, {
+      id: notifId,
+      studentUid: uid,
+      title: cleanTitle,
+      message: cleanMessage,
+      read: false,
+      createdAt: serverTimestamp(),
+    });
+  });
+
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, 'students/*/notifications');
+  }
+  return validUids.length;
+}
+
+export async function markFirebaseNotificationsRead(
+  uid: string,
+  notificationIds: string[]
+): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== uid || !ID_PATTERN.test(uid)) {
+    return;
+  }
+  const validIds = notificationIds.filter((id) => ID_PATTERN.test(id));
+  if (validIds.length === 0) return;
+
+  const batch = writeBatch(db);
+  for (const notifId of validIds.slice(0, 50)) {
+    batch.update(doc(db, 'students', uid, 'notifications', notifId), {
+      read: true,
+    });
+  }
+
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `students/${uid}/notifications`);
+  }
 }
 
 export async function signOutFirebase(): Promise<void> {

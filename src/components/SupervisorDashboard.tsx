@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowRight,
   ArrowUp,
+  Ban,
+  Bell,
   BookOpen,
   CheckCircle2,
   ChevronDown,
@@ -14,16 +17,21 @@ import {
   GraduationCap,
   HelpCircle,
   ImagePlus,
+  Laptop,
   Link2,
   LogOut,
   Plus,
+  RefreshCw,
+  RotateCcw,
   Save,
   Search,
+  Send,
   ShieldCheck,
   Trash2,
   Upload,
   Users,
   Video,
+  Wallet,
   X,
 } from 'lucide-react';
 import {
@@ -34,6 +42,8 @@ import {
   Lesson,
   LessonAttachment,
   LessonVideo,
+  normalizeSubjectCategory,
+  PLATFORM_SUBJECTS,
   QuizQuestion,
 } from '../data/academyData';
 import {
@@ -48,18 +58,25 @@ import {
   apiDeleteCourse,
   apiDeleteTeacher,
   apiFetchSupervisorStudents,
+  apiSendSupervisorAlerts,
   apiUpdateCourse,
   apiUpdateSupervisorStudent,
   apiUploadMediaFile,
   mergeCatalogCourses,
 } from '../utils/apiClient';
 import {
+  computeStudentAttendance,
+  formatAttendanceDateArabic,
+  getDistinctAttendanceDays,
+} from '../utils/attendance';
+import {
   fetchAllFirebaseStudents,
+  sendFirebaseStudentAlerts,
   updateFirebaseStudentBySupervisor,
 } from '../services/firebaseStudents';
 import { ResilientImage } from './ResilientImage';
 
-export type AdminTab = 'students' | 'teachers' | 'courses';
+export type AdminTab = 'students' | 'low-attendance' | 'teachers' | 'courses';
 
 interface SupervisorDashboardProps {
   supervisorName: string;
@@ -68,6 +85,7 @@ interface SupervisorDashboardProps {
   initialTab?: AdminTab;
   teachers: DynamicTeacher[];
   customCourses: Course[];
+  deletedCourseIds?: string[];
   onCatalogUpdated: () => Promise<void> | void;
   onLogout: () => void;
 }
@@ -99,12 +117,45 @@ function compressImageFile(file: File): Promise<string> {
   });
 }
 
-function createEmptyQuizQuestion(titleHint = 'الحصة'): QuizQuestion {
+function readVideoDurationSeconds(src: string | File): Promise<number> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    const isFile = src instanceof File;
+    const objectUrl = isFile ? URL.createObjectURL(src) : src;
+    let settled = false;
+
+    const finish = (seconds: number) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      if (isFile) {
+        URL.revokeObjectURL(objectUrl);
+      }
+      video.removeAttribute('src');
+      video.load();
+      resolve(Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds) : 0);
+    };
+
+    const timer = window.setTimeout(() => finish(0), 3500);
+    video.onloadedmetadata = () => finish(video.duration);
+    video.onerror = () => finish(0);
+    video.src = objectUrl;
+  });
+}
+
+function calcLessonDurationMinutes(videos: LessonVideo[]): number {
+  const totalSeconds = videos.reduce((sum, v) => sum + (v.durationSeconds || 0), 0);
+  return totalSeconds > 0 ? Math.max(1, Math.round(totalSeconds / 60)) : 0;
+}
+
+function createEmptyQuizQuestion(): QuizQuestion {
   return {
-    question: `سؤال تطبيقي على ${titleHint}`,
-    options: ['الإجابة الأولى', 'الإجابة الثانية', 'الإجابة الثالثة', 'الإجابة الرابعة'],
+    question: '',
+    questionImage: '',
+    options: ['أ', 'ب', 'ج', 'د'],
     correctIndex: 0,
-    explanation: 'مراجعة القاعدة الأساسية في الشرح والتحقق من خطوات الحل.',
+    explanation: '',
   };
 }
 
@@ -112,23 +163,29 @@ function normalizeLessonForEditor(lesson: Lesson): Lesson {
   const examQuestions =
     lesson.examQuestions && lesson.examQuestions.length > 0
       ? lesson.examQuestions.map((q) => ({
-          question: q.question,
+          question: q.question ?? '',
+          questionImage: q.questionImage ?? '',
           options: q.options.length >= 2 ? [...q.options] : ['أ', 'ب', 'ج', 'د'],
           correctIndex: q.correctIndex ?? 0,
           explanation: q.explanation ?? '',
         }))
       : [
           {
-            question: lesson.quiz.question,
+            question: lesson.quiz.question ?? '',
+            questionImage: lesson.quiz.questionImage ?? '',
             options: [...lesson.quiz.options],
             correctIndex: lesson.quiz.correctIndex,
-            explanation: lesson.quiz.explanation,
+            explanation: lesson.quiz.explanation ?? '',
           },
         ];
 
+  const videos = lesson.videos ? [...lesson.videos] : [];
+  const autoMinutes = calcLessonDurationMinutes(videos);
+
   return {
     ...lesson,
-    videos: lesson.videos ? [...lesson.videos] : [],
+    durationMinutes: autoMinutes > 0 ? autoMinutes : lesson.durationMinutes || 0,
+    videos,
     attachments: lesson.attachments ? [...lesson.attachments] : [],
     examQuestions,
     quiz: examQuestions[0],
@@ -142,6 +199,7 @@ export function SupervisorDashboard({
   initialTab = 'students',
   teachers,
   customCourses,
+  deletedCourseIds = [],
   onCatalogUpdated,
   onLogout,
 }: SupervisorDashboardProps) {
@@ -153,15 +211,28 @@ export function SupervisorDashboard({
   const [stageFilter, setStageFilter] = useState<string>('جميع المراحل');
   const [selectedStudent, setSelectedStudent] = useState<StudentRecord | null>(null);
 
-  const [editNotes, setEditNotes] = useState('');
-  const [editAttendance, setEditAttendance] = useState<number>(100);
-  const [editCourses, setEditCourses] = useState<string[]>([]);
+  const [editWalletAdd, setEditWalletAdd] = useState('');
+  const [editBlocked, setEditBlocked] = useState(false);
+  const [editDevicesCount, setEditDevicesCount] = useState(0);
+  const [resetDevicesFlag, setResetDevicesFlag] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
 
+  // Low-attendance alert composer state
+  const [alertTargets, setAlertTargets] = useState<StudentRecord[] | null>(null);
+  const [alertTitle, setAlertTitle] = useState('تنبيه هام بخصوص نسبة الحضور');
+  const [alertMessage, setAlertMessage] = useState(
+    'نسبة حضورك الحالية أقل من 50%. يرجى الدخول ومتابعة الحصص المسجلة بانتظام لرفع نسبة الحضور والاستفادة الكاملة من المنهج.'
+  );
+  const [alertSending, setAlertSending] = useState(false);
+  const [alertFeedback, setAlertFeedback] = useState<{
+    type: 'ok' | 'error';
+    text: string;
+  } | null>(null);
+
   // Teacher form state
   const [teacherName, setTeacherName] = useState('');
-  const [teacherSubject, setTeacherSubject] = useState('');
+  const [teacherSubject, setTeacherSubject] = useState<string>(PLATFORM_SUBJECTS[0]);
   const [teacherImage, setTeacherImage] = useState('');
   const [teacherGrades, setTeacherGrades] = useState<EducationalStage[]>([
     'الصف الثالث الثانوي',
@@ -171,15 +242,12 @@ export function SupervisorDashboard({
 
   // Course creation form state
   const [courseTitle, setCourseTitle] = useState('');
-  const [courseSubtitle, setCourseSubtitle] = useState('');
   const [courseGrade, setCourseGrade] =
     useState<EducationalStage>('الصف الثالث الثانوي');
   const [courseTeacherId, setCourseTeacherId] = useState('');
-  const [courseMode, setCourseMode] = useState<'أونلاين' | 'سنتر وأونلاين'>(
-    'سنتر وأونلاين'
-  );
+  const [courseCategory, setCourseCategory] = useState<string>(PLATFORM_SUBJECTS[0]);
   const [coursePrice, setCoursePrice] = useState('250');
-  const [courseLessonsText, setCourseLessonsText] = useState('');
+  const [courseImage, setCourseImage] = useState('');
   const [courseSaving, setCourseSaving] = useState(false);
   const [courseFeedback, setCourseFeedback] = useState('');
 
@@ -204,21 +272,23 @@ export function SupervisorDashboard({
   }, [initialTab]);
 
   useEffect(() => {
-    if (teachers.length > 0 && !courseTeacherId) {
+    if (teachers.length > 0 && !teachers.some((t) => t.id === courseTeacherId)) {
       setCourseTeacherId(teachers[0].id);
+      const norm = normalizeSubjectCategory(teachers[0].subject);
+      if (norm) setCourseCategory(norm);
     }
   }, [teachers, courseTeacherId]);
 
   const allCourses = useMemo(
-    () => mergeCatalogCourses(customCourses, COURSES),
-    [customCourses]
+    () => mergeCatalogCourses(customCourses, COURSES, deletedCourseIds),
+    [customCourses, deletedCourseIds]
   );
 
-  const builtInCourseIds = useMemo(() => new Set(COURSES.map((c) => c.id)), []);
-
-  const loadStudents = async () => {
-    setLoading(true);
-    setErrorMsg('');
+  const loadStudents = async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setErrorMsg('');
+    }
     try {
       if (token === 'firebase-google-session') {
         const fbStudents = await fetchAllFirebaseStudents();
@@ -227,14 +297,14 @@ export function SupervisorDashboard({
       }
       const result = await apiFetchSupervisorStudents(token);
       if (!result.ok) {
-        setErrorMsg(result.error);
+        if (!silent) setErrorMsg(result.error);
         return;
       }
       setStudents(result.students);
     } catch {
-      setErrorMsg('تعذر تحميل بيانات الطلاب من قاعدة البيانات.');
+      if (!silent) setErrorMsg('تعذر تحميل بيانات الطلاب من قاعدة البيانات.');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -242,6 +312,20 @@ export function SupervisorDashboard({
     loadStudents();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  useEffect(() => {
+    if (activeTab === 'students' || activeTab === 'low-attendance') {
+      loadStudents(true);
+    }
+    const handleFocus = () => {
+      if (activeTab === 'students' || activeTab === 'low-attendance') {
+        loadStudents(true);
+      }
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, token]);
 
   const filteredStudents = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -261,16 +345,11 @@ export function SupervisorDashboard({
 
   const openStudentFollowUp = (student: StudentRecord) => {
     setSelectedStudent(student);
-    setEditNotes(student.supervisorNotes);
-    setEditAttendance(student.attendanceRate);
-    setEditCourses(student.unlockedCourseIds);
+    setEditWalletAdd('');
+    setEditBlocked(Boolean(student.isBlocked));
+    setEditDevicesCount(student.activeDeviceIds?.length ?? 0);
+    setResetDevicesFlag(false);
     setSavedNotice(false);
-  };
-
-  const toggleCourseForStudent = (courseId: string) => {
-    setEditCourses((prev) =>
-      prev.includes(courseId) ? prev.filter((id) => id !== courseId) : [...prev, courseId]
-    );
   };
 
   const handleSaveFollowUp = async (e: React.FormEvent) => {
@@ -278,31 +357,40 @@ export function SupervisorDashboard({
     if (!selectedStudent) return;
     setSaving(true);
     setSavedNotice(false);
+    const addAmount = Math.max(0, Math.round(Number(editWalletAdd) || 0));
+    const currentWallet = Math.max(0, Number(selectedStudent.walletBalance) || 0);
+    const nextBalance = Math.min(1000000, currentWallet + addAmount);
     try {
       if (token === 'firebase-google-session') {
         const updated = await updateFirebaseStudentBySupervisor(selectedStudent.id, {
-          supervisorNotes: editNotes,
-          attendanceRate: editAttendance,
-          unlockedCourseIds: editCourses,
+          walletBalance: nextBalance,
+          isBlocked: editBlocked,
+          ...(resetDevicesFlag ? { activeDeviceIds: [] } : {}),
         });
         setStudents((prev) =>
           prev.map((s) => (s.id === updated.id ? updated : s))
         );
         setSelectedStudent(updated);
+        setEditWalletAdd('');
+        setEditDevicesCount(updated.activeDeviceIds?.length ?? 0);
+        setResetDevicesFlag(false);
         setSavedNotice(true);
         return;
       }
 
       const result = await apiUpdateSupervisorStudent(selectedStudent.id, token, {
-        supervisorNotes: editNotes,
-        attendanceRate: editAttendance,
-        unlockedCourseIds: editCourses,
+        walletBalance: nextBalance,
+        isBlocked: editBlocked,
+        resetDevices: resetDevicesFlag,
       });
       if (result.ok) {
         setStudents((prev) =>
           prev.map((s) => (s.id === result.student.id ? result.student : s))
         );
         setSelectedStudent(result.student);
+        setEditWalletAdd('');
+        setEditDevicesCount(result.student.activeDeviceIds?.length ?? 0);
+        setResetDevicesFlag(false);
         setSavedNotice(true);
       }
     } finally {
@@ -343,7 +431,7 @@ export function SupervisorDashboard({
         return;
       }
       setTeacherName('');
-      setTeacherSubject('');
+      setTeacherSubject(PLATFORM_SUBJECTS[0]);
       setTeacherImage('');
       setTeacherGrades(['الصف الثالث الثانوي']);
       setTeacherFeedback('تمت إضافة المدرس بنجاح وظهوره في الصفحة الأولى.');
@@ -368,40 +456,68 @@ export function SupervisorDashboard({
     setEditorFeedback('');
   };
 
+  const handleUploadCourseImage = async (
+    file: File | undefined,
+    target: 'new' | 'edit'
+  ) => {
+    if (!file) return;
+    const key = target === 'new' ? 'new-course-img' : 'edit-course-img';
+    setUploadingKey(key);
+    if (target === 'new') setCourseFeedback('');
+    else setEditorFeedback('');
+    try {
+      const res = await apiUploadMediaFile(token, file);
+      if (!res.ok) {
+        if (target === 'new') setCourseFeedback(res.error);
+        else setEditorFeedback(res.error);
+        return;
+      }
+      if (target === 'new') {
+        setCourseImage(res.url);
+      } else {
+        setEditingCourse((prev) => (prev ? { ...prev, image: res.url } : prev));
+      }
+    } finally {
+      setUploadingKey(null);
+    }
+  };
+
   const handleAddCourseSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setCourseFeedback('');
-    if (!courseTeacherId && teachers.length === 0) {
+    if (teachers.length === 0) {
       setCourseFeedback('أضف مدرسًا أولًا من تبويب إدارة المدرسين لربط الكورس به.');
       return;
     }
-    const chosenTeacher = teachers.find((t) => t.id === courseTeacherId);
+    const chosenTeacher =
+      teachers.find((t) => t.id === courseTeacherId) || teachers[0];
     setCourseSaving(true);
     try {
-      const lessonTitles = courseLessonsText
-        .split('\n')
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const resolvedCategory =
+        normalizeSubjectCategory(courseCategory) ||
+        normalizeSubjectCategory(chosenTeacher.subject) ||
+        PLATFORM_SUBJECTS[0];
+
+      const parsedPrice = coursePrice.trim() !== '' ? Number(coursePrice) : 250;
 
       const res = await apiAddCourse(token, {
         title: courseTitle,
-        subtitle: courseSubtitle,
+        subtitle: '',
         grade: courseGrade,
-        category: chosenTeacher?.subject || 'محتوى المنهج',
-        instructorId: chosenTeacher?.id || courseTeacherId || 'inst-custom',
-        studyMode: courseMode,
-        priceEgp: Number(coursePrice) || 250,
-        image: chosenTeacher?.image || '',
-        lessonTitles,
+        category: resolvedCategory,
+        instructorId: chosenTeacher.id,
+        studyMode: 'أونلاين',
+        priceEgp: Number.isFinite(parsedPrice) ? Math.max(0, parsedPrice) : 250,
+        image: courseImage || chosenTeacher.image || '',
+        lessonTitles: [],
       });
       if (!res.ok) {
         setCourseFeedback(res.error);
         return;
       }
       setCourseTitle('');
-      setCourseSubtitle('');
-      setCourseLessonsText('');
-      setCourseFeedback(`تمت إضافة الكورس بنجاح لطلاب ${courseGrade}. يمكنك الآن رفع الفيديوهات والملفات.`);
+      setCourseImage('');
+      setCourseFeedback(`تمت إضافة الكورس وربطه بالمدرس ${chosenTeacher.name} لطلاب ${courseGrade}.`);
       await onCatalogUpdated();
       openCourseEditor(res.course);
     } finally {
@@ -430,13 +546,13 @@ export function SupervisorDashboard({
     const nextNum = editingLessons.length + 1;
     const newId = `les-${Date.now()}-${nextNum}`;
     const defaultTitle = `الحصة ${nextNum}: درس جديد`;
-    const q = createEmptyQuizQuestion(defaultTitle);
+    const q = createEmptyQuizQuestion();
     const newLesson: Lesson = {
       id: newId,
       title: defaultTitle,
-      durationMinutes: 45,
-      summary: `شرح ومحتوى ${defaultTitle}`,
-      keyTakeaways: ['النقطة الأساسية الأولى في الحصة', 'تدريبات وتطبيقات محلولة'],
+      durationMinutes: 0,
+      summary: '',
+      keyTakeaways: [],
       videos: [],
       attachments: [],
       examQuestions: [q],
@@ -463,7 +579,7 @@ export function SupervisorDashboard({
     setEditingLessons((prev) => prev.filter((l) => l.id !== lessonId));
   };
 
-  const handleAddVideoLink = (lessonId: string) => {
+  const handleAddVideoLink = async (lessonId: string) => {
     const url = (videoLinkUrlDraft[lessonId] || '').trim();
     if (!url) {
       setEditorFeedback('يرجى إدخال رابط الفيديو أولًا.');
@@ -472,16 +588,22 @@ export function SupervisorDashboard({
     const lesson = editingLessons.find((l) => l.id === lessonId);
     const nextNum = (lesson?.videos?.length ?? 0) + 1;
     const title = (videoLinkTitleDraft[lessonId] || '').trim() || `فيديو الشرح ${nextNum}`;
+    const durationSeconds = await readVideoDurationSeconds(url);
     const newVideo: LessonVideo = {
       id: `vid-${Date.now()}`,
       title,
       url,
       sourceType: 'link',
+      ...(durationSeconds > 0 ? { durationSeconds } : {}),
     };
-    updateLessonField(lessonId, (les) => ({
-      ...les,
-      videos: [...(les.videos ?? []), newVideo],
-    }));
+    updateLessonField(lessonId, (les) => {
+      const nextVideos = [...(les.videos ?? []), newVideo];
+      return {
+        ...les,
+        videos: nextVideos,
+        durationMinutes: calcLessonDurationMinutes(nextVideos),
+      };
+    });
     setVideoLinkTitleDraft((p) => ({ ...p, [lessonId]: '' }));
     setVideoLinkUrlDraft((p) => ({ ...p, [lessonId]: '' }));
     setEditorFeedback('');
@@ -492,7 +614,10 @@ export function SupervisorDashboard({
     setUploadingKey(`vid-${lessonId}`);
     setEditorFeedback('');
     try {
-      const res = await apiUploadMediaFile(token, file);
+      const [durationSeconds, res] = await Promise.all([
+        readVideoDurationSeconds(file),
+        apiUploadMediaFile(token, file),
+      ]);
       if (!res.ok) {
         setEditorFeedback(res.error);
         return;
@@ -508,11 +633,16 @@ export function SupervisorDashboard({
         title: customTitle,
         url: res.url,
         sourceType: 'upload',
+        ...(durationSeconds > 0 ? { durationSeconds } : {}),
       };
-      updateLessonField(lessonId, (les) => ({
-        ...les,
-        videos: [...(les.videos ?? []), newVideo],
-      }));
+      updateLessonField(lessonId, (les) => {
+        const nextVideos = [...(les.videos ?? []), newVideo];
+        return {
+          ...les,
+          videos: nextVideos,
+          durationMinutes: calcLessonDurationMinutes(nextVideos),
+        };
+      });
       setVideoUploadTitleDraft((p) => ({ ...p, [lessonId]: '' }));
     } finally {
       setUploadingKey(null);
@@ -520,10 +650,14 @@ export function SupervisorDashboard({
   };
 
   const handleRemoveVideo = (lessonId: string, videoId: string) => {
-    updateLessonField(lessonId, (les) => ({
-      ...les,
-      videos: (les.videos ?? []).filter((v) => v.id !== videoId),
-    }));
+    updateLessonField(lessonId, (les) => {
+      const nextVideos = (les.videos ?? []).filter((v) => v.id !== videoId);
+      return {
+        ...les,
+        videos: nextVideos,
+        durationMinutes: calcLessonDurationMinutes(nextVideos),
+      };
+    });
   };
 
   const handleUploadAttachmentFile = async (lessonId: string, file: File | undefined) => {
@@ -589,7 +723,7 @@ export function SupervisorDashboard({
   const handleAddExamQuestion = (lessonId: string) => {
     updateLessonField(lessonId, (les) => {
       const current = les.examQuestions ?? [les.quiz];
-      const next = [...current, createEmptyQuizQuestion(les.title)];
+      const next = [...current, createEmptyQuizQuestion()];
       return { ...les, examQuestions: next, quiz: next[0] };
     });
   };
@@ -604,6 +738,29 @@ export function SupervisorDashboard({
       const next = current.map((q, idx) => (idx === qIdx ? updater(q) : q));
       return { ...les, examQuestions: next, quiz: next[0] };
     });
+  };
+
+  const handleUploadQuizQuestionImage = async (
+    lessonId: string,
+    qIdx: number,
+    file: File | undefined
+  ) => {
+    if (!file) return;
+    setUploadingKey(`quiz-img-${lessonId}-${qIdx}`);
+    setEditorFeedback('');
+    try {
+      const res = await apiUploadMediaFile(token, file);
+      if (!res.ok) {
+        setEditorFeedback(res.error);
+        return;
+      }
+      handleUpdateExamQuestion(lessonId, qIdx, (prevQ) => ({
+        ...prevQ,
+        questionImage: res.url,
+      }));
+    } finally {
+      setUploadingKey(null);
+    }
   };
 
   const handleDeleteExamQuestion = (lessonId: string, qIdx: number) => {
@@ -634,17 +791,27 @@ export function SupervisorDashboard({
           les.examQuestions && les.examQuestions.length > 0
             ? les.examQuestions
             : [les.quiz];
+        const autoMinutes = calcLessonDurationMinutes(les.videos ?? []);
         return {
           ...les,
+          durationMinutes: autoMinutes > 0 ? autoMinutes : les.durationMinutes || 0,
+          summary: '',
+          keyTakeaways: [],
           examQuestions: qs,
           quiz: qs[0],
         };
       });
 
+      const totalMinutes = normalizedLessons.reduce(
+        (sum, les) => sum + (les.durationMinutes || 0),
+        0
+      );
+
       const updatedCourse: Course = {
         ...editingCourse,
+        subtitle: '',
         fallbackTitle: editingCourse.title.trim(),
-        totalHours: Math.max(2, normalizedLessons.length * 2),
+        totalHours: totalMinutes > 0 ? Math.max(1, Math.round(totalMinutes / 60)) : 0,
         modules: [
           {
             id: editingCourse.modules[0]?.id || `mod-${Date.now()}`,
@@ -668,11 +835,114 @@ export function SupervisorDashboard({
     }
   };
 
-  const resolveTeacherLabel = (instructorId: string) => {
+  const resolveTeacherInfo = (instructorId: string) => {
     const dyn = teachers.find((t) => t.id === instructorId);
-    if (dyn) return `${dyn.name} (${dyn.subject})`;
+    if (dyn) {
+      return {
+        name: dyn.name,
+        subject: dyn.subject,
+        image: dyn.image,
+      };
+    }
     const built = INSTRUCTORS.find((i) => i.id === instructorId);
-    return built ? built.name : 'مدرس المادة';
+    return {
+      name: built ? built.name : 'مدرس المادة',
+      subject: built ? built.specialty : '',
+      image: built ? built.image : '',
+    };
+  };
+
+  const resolveTeacherLabel = (instructorId: string) => {
+    const info = resolveTeacherInfo(instructorId);
+    return info.subject ? `${info.name} (${info.subject})` : info.name;
+  };
+
+  const lowAttendanceRows = useMemo(() => {
+    return students
+      .map((student) => ({
+        student,
+        attendance: computeStudentAttendance(student, allCourses),
+      }))
+      .filter((entry) => entry.attendance.rate < 50)
+      .sort((a, b) => a.attendance.rate - b.attendance.rate);
+  }, [students, allCourses]);
+
+  const filteredLowAttendanceRows = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return lowAttendanceRows.filter(({ student }) => {
+      const matchesStage =
+        stageFilter === 'جميع المراحل' || student.stage === stageFilter;
+      const matchesQuery =
+        !q ||
+        student.studentName.toLowerCase().includes(q) ||
+        student.studentPhone.includes(q) ||
+        student.parentName.toLowerCase().includes(q) ||
+        student.parentPhone.includes(q);
+      return matchesStage && matchesQuery;
+    });
+  }, [lowAttendanceRows, searchQuery, stageFilter]);
+
+  const openAlertComposer = (targets: StudentRecord[]) => {
+    if (targets.length === 0) return;
+    setAlertTargets(targets);
+    setAlertTitle('تنبيه هام بخصوص نسبة الحضور');
+    setAlertMessage(
+      targets.length === 1
+        ? `مرحبًا ${targets[0].studentName}، نسبة حضورك الحالية أقل من 50%. يرجى الدخول لمتابعة الحصص المسجلة بانتظام لرفع نسبة الحضور.`
+        : 'نسبة حضورك الحالية أقل من 50%. يرجى الدخول ومتابعة الحصص المسجلة بانتظام لرفع نسبة الحضور والاستفادة الكاملة من المنهج.'
+    );
+    setAlertFeedback(null);
+  };
+
+  const handleSendAlertsSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!alertTargets || alertTargets.length === 0) return;
+    const cleanTitle = alertTitle.trim();
+    const cleanMsg = alertMessage.trim();
+    if (cleanTitle.length < 2 || cleanMsg.length < 2) {
+      setAlertFeedback({ type: 'error', text: 'يرجى كتابة عنوان ونص التنبيه أولًا.' });
+      return;
+    }
+
+    setAlertSending(true);
+    setAlertFeedback(null);
+    const targetIds = alertTargets.map((s) => s.id);
+    try {
+      if (token === 'firebase-google-session') {
+        const sentCount = await sendFirebaseStudentAlerts(targetIds, {
+          title: cleanTitle,
+          message: cleanMsg,
+        });
+        const refreshed = await fetchAllFirebaseStudents();
+        setStudents(refreshed);
+        setAlertFeedback({
+          type: 'ok',
+          text: `تم إرسال التنبيه داخل المنصة إلى ${sentCount} طالب بنجاح.`,
+        });
+        return;
+      }
+
+      const res = await apiSendSupervisorAlerts(token, {
+        studentIds: targetIds,
+        title: cleanTitle,
+        message: cleanMsg,
+      });
+      if (!res.ok) {
+        setAlertFeedback({ type: 'error', text: res.error });
+        return;
+      }
+      if (res.students) {
+        setStudents(res.students);
+      }
+      setAlertFeedback({
+        type: 'ok',
+        text: `تم إرسال التنبيه داخل المنصة إلى ${res.sentCount} طالب بنجاح.`,
+      });
+    } catch {
+      setAlertFeedback({ type: 'error', text: 'تعذر إرسال التنبيه. حاول مرة أخرى.' });
+    } finally {
+      setAlertSending(false);
+    }
   };
 
   const bacCount = students.filter((s) => s.stage === 'البكالوريا').length;
@@ -753,6 +1023,29 @@ export function SupervisorDashboard({
         <button
           type="button"
           role="tab"
+          aria-selected={activeTab === 'low-attendance'}
+          onClick={() => {
+            setActiveTab('low-attendance');
+            setEditingCourse(null);
+          }}
+          className={`inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            activeTab === 'low-attendance'
+              ? 'bg-white text-slate-900 shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <AlertTriangle className="w-4 h-4 text-amber-600" />
+          <span>نسبة الحضور &lt; 50%</span>
+          {lowAttendanceRows.length > 0 && (
+            <span className="px-1.5 py-0.5 text-[11px] font-bold bg-amber-100 text-amber-800 rounded-md tabular-nums">
+              {lowAttendanceRows.length}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          role="tab"
           aria-selected={activeTab === 'teachers'}
           onClick={() => {
             setActiveTab('teachers');
@@ -815,20 +1108,23 @@ export function SupervisorDashboard({
 
             <div>
               <label
-                htmlFor="teacher-subject-input"
+                htmlFor="teacher-subject-select"
                 className="block text-xs font-semibold text-slate-700 mb-1"
               >
                 المادة الدراسية
               </label>
-              <input
-                id="teacher-subject-input"
-                type="text"
-                required
+              <select
+                id="teacher-subject-select"
                 value={teacherSubject}
                 onChange={(e) => setTeacherSubject(e.target.value)}
-                placeholder="مثال: الرياضيات، الفيزياء، الكيمياء..."
                 className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-              />
+              >
+                {PLATFORM_SUBJECTS.map((subj) => (
+                  <option key={subj} value={subj}>
+                    {subj}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div>
@@ -932,40 +1228,62 @@ export function SupervisorDashboard({
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {teachers.map((t) => (
-                  <div
-                    key={t.id}
-                    className="rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between bg-slate-50/40"
-                  >
-                    <div>
-                      <div className="aspect-[4/3] bg-slate-100 border-b border-slate-200 overflow-hidden">
-                        <ResilientImage
-                          src={t.image}
-                          alt={t.name}
-                          fallbackTitle={t.name}
-                          className="w-full h-full object-cover object-top"
-                        />
-                      </div>
-                      <div className="p-4 space-y-1.5">
-                        <h3 className="text-base font-bold text-slate-900">{t.name}</h3>
-                        <div className="text-xs font-semibold text-blue-700">
-                          مدرس مادة: {t.subject}
+                {teachers.map((t) => {
+                  const linkedCount = allCourses.filter(
+                    (c) => c.instructorId === t.id
+                  ).length;
+                  return (
+                    <div
+                      key={t.id}
+                      className="rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between bg-slate-50/40"
+                    >
+                      <div>
+                        <div className="aspect-[4/3] bg-slate-100 border-b border-slate-200 overflow-hidden">
+                          <ResilientImage
+                            src={t.image}
+                            alt={t.name}
+                            fallbackTitle={t.name}
+                            className="w-full h-full object-cover object-top"
+                          />
                         </div>
-                        <div className="text-xs text-slate-500">{t.grades.join(' · ')}</div>
+                        <div className="p-4 space-y-1.5">
+                          <h3 className="text-base font-bold text-slate-900">{t.name}</h3>
+                          <div className="text-xs font-semibold text-blue-700">
+                            مدرس مادة: {t.subject}
+                          </div>
+                          <div className="text-xs text-slate-500">{t.grades.join(' · ')}</div>
+                          <div className="text-xs font-medium text-slate-700 tabular-nums">
+                            {linkedCount} كورس مربوط بالمدرس
+                          </div>
+                        </div>
+                      </div>
+                      <div className="px-4 pb-4 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCourseTeacherId(t.id);
+                            setCourseCategory(normalizeSubjectCategory(t.subject) || PLATFORM_SUBJECTS[0]);
+                            if (t.grades[0]) setCourseGrade(t.grades[0]);
+                            setActiveTab('courses');
+                            setEditingCourse(null);
+                          }}
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>إضافة كورس له</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTeacher(t.id)}
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>حذف</span>
+                        </button>
                       </div>
                     </div>
-                    <div className="px-4 pb-4">
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteTeacher(t.id)}
-                        className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>حذف المدرس</span>
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -978,17 +1296,14 @@ export function SupervisorDashboard({
             onSubmit={handleAddCourseSubmit}
             className="lg:col-span-5 bg-white rounded-xl border border-slate-200 p-5 sm:p-6 space-y-4 min-w-0"
           >
-            <h2 className="text-base font-bold text-slate-900">إضافة كورس جديد لمرحلة دراسية</h2>
-            <p className="text-xs text-slate-500">
-              بعد إضافة الكورس ستفتح لك مباشرة لوحة التحكم لرفع فيديوهات الحصص، إضافة روابط الفيديو، رفع الملفات، ووضع امتحان لكل حصة.
-            </p>
+            <h2 className="text-base font-bold text-slate-900">إضافة كورس جديد</h2>
 
             <div>
               <label
                 htmlFor="course-grade-select"
                 className="block text-xs font-semibold text-slate-700 mb-1"
               >
-                المرحلة الدراسية (السنة)
+                السنة الدراسية
               </label>
               <select
                 id="course-grade-select"
@@ -1009,12 +1324,20 @@ export function SupervisorDashboard({
                 htmlFor="course-teacher-select"
                 className="block text-xs font-semibold text-slate-700 mb-1"
               >
-                المدرس المسؤول عن الكورس
+                المدرس المسئول عن الكورس
               </label>
               <select
                 id="course-teacher-select"
                 value={courseTeacherId}
-                onChange={(e) => setCourseTeacherId(e.target.value)}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  setCourseTeacherId(nextId);
+                  const found = teachers.find((t) => t.id === nextId);
+                  if (found) {
+                    const norm = normalizeSubjectCategory(found.subject);
+                    if (norm) setCourseCategory(norm);
+                  }
+                }}
                 className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               >
                 {teachers.length === 0 ? (
@@ -1026,6 +1349,27 @@ export function SupervisorDashboard({
                     </option>
                   ))
                 )}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="course-subject-select"
+                className="block text-xs font-semibold text-slate-700 mb-1"
+              >
+                المادة
+              </label>
+              <select
+                id="course-subject-select"
+                value={courseCategory}
+                onChange={(e) => setCourseCategory(e.target.value)}
+                className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+              >
+                {PLATFORM_SUBJECTS.map((subj) => (
+                  <option key={subj} value={subj}>
+                    {subj}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -1049,74 +1393,65 @@ export function SupervisorDashboard({
 
             <div>
               <label
-                htmlFor="course-subtitle-input"
+                htmlFor="course-price-input"
                 className="block text-xs font-semibold text-slate-700 mb-1"
               >
-                وصف مختصر للكورس
+                سعر الكورس (ج.م)
               </label>
               <input
-                id="course-subtitle-input"
-                type="text"
-                value={courseSubtitle}
-                onChange={(e) => setCourseSubtitle(e.target.value)}
-                placeholder="محتوى الكورس وأبرز النقاط المغطاة"
-                className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                id="course-price-input"
+                type="number"
+                min={0}
+                required
+                value={coursePrice}
+                onChange={(e) => setCoursePrice(e.target.value)}
+                className="w-full px-3.5 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
               />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label
-                  htmlFor="course-mode-select"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
-                >
-                  نظام الحضور
-                </label>
-                <select
-                  id="course-mode-select"
-                  value={courseMode}
-                  onChange={(e) =>
-                    setCourseMode(e.target.value as 'أونلاين' | 'سنتر وأونلاين')
-                  }
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-                >
-                  <option value="سنتر وأونلاين">سنتر وأونلاين</option>
-                  <option value="أونلاين">أونلاين</option>
-                </select>
-              </div>
-              <div>
-                <label
-                  htmlFor="course-price-input"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
-                >
-                  السعر الشهري (ج.م)
-                </label>
-                <input
-                  id="course-price-input"
-                  type="number"
-                  min={0}
-                  value={coursePrice}
-                  onChange={(e) => setCoursePrice(e.target.value)}
-                  className="w-full px-3 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-                />
-              </div>
             </div>
 
             <div>
-              <label
-                htmlFor="course-lessons-input"
-                className="block text-xs font-semibold text-slate-700 mb-1"
-              >
-                عناوين الحصص المبدئية (كل حصة في سطر)
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                صورة الكورس
               </label>
-              <textarea
-                id="course-lessons-input"
-                rows={4}
-                value={courseLessonsText}
-                onChange={(e) => setCourseLessonsText(e.target.value)}
-                placeholder={'الحصة الأولى: الأساسيات\nالحصة الثانية: حل تمارين شاملة\nالحصة الثالثة: امتحان تطبيقي'}
-                className="w-full p-3 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-              />
+              <div className="space-y-2.5">
+                <label className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2.5 text-xs font-semibold text-slate-800 bg-slate-50 border border-dashed border-slate-300 rounded-lg hover:bg-slate-100 cursor-pointer transition-colors">
+                  <ImagePlus className="w-4 h-4 text-blue-700" />
+                  <span>
+                    {uploadingKey === 'new-course-img'
+                      ? 'جاري رفع صورة الكورس...'
+                      : courseImage
+                      ? 'تغيير صورة الكورس'
+                      : 'رفع صورة للكورس'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = '';
+                      handleUploadCourseImage(file, 'new');
+                    }}
+                  />
+                </label>
+                {courseImage && (
+                  <div className="flex items-center gap-3 p-2 rounded-lg bg-slate-50 border border-slate-200">
+                    <img
+                      src={courseImage}
+                      alt="معاينة صورة الكورس"
+                      className="w-20 h-14 object-cover rounded-md border border-slate-200 bg-white shrink-0"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setCourseImage('')}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 hover:underline cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>إزالة الصورة</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
 
             {courseFeedback && (
@@ -1127,11 +1462,11 @@ export function SupervisorDashboard({
 
             <button
               type="submit"
-              disabled={courseSaving}
+              disabled={courseSaving || uploadingKey === 'new-course-img'}
               className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors disabled:opacity-60 cursor-pointer"
             >
               <Plus className="w-4 h-4" />
-              <span>{courseSaving ? 'جاري الحفظ...' : 'إضافة الكورس والتحكم في حصصه'}</span>
+              <span>{courseSaving ? 'جاري الحفظ...' : 'إضافة الكورس'}</span>
             </button>
           </form>
 
@@ -1153,21 +1488,34 @@ export function SupervisorDashboard({
             <div className="space-y-3">
               {allCourses.map((c) => {
                 const lessonsCount = getCourseAllLessons(c).length;
-                const isBuiltIn = builtInCourseIds.has(c.id);
+                const teacherInfo = resolveTeacherInfo(c.instructorId);
                 return (
                   <div
                     key={c.id}
                     className="p-4 rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-50/50"
                   >
-                    <div className="space-y-1 min-w-0">
-                      <div className="text-xs font-semibold text-blue-700">
-                        {c.grade} · {resolveTeacherLabel(c.instructorId)} ·{' '}
-                        <span className="tabular-nums">{lessonsCount} حصة</span>
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="w-12 h-12 rounded-lg overflow-hidden border border-slate-200 bg-slate-100 shrink-0 mt-0.5">
+                        <ResilientImage
+                          src={c.image || teacherInfo.image}
+                          alt={c.title}
+                          fallbackTitle={c.title}
+                          className="w-full h-full object-cover object-center"
+                        />
                       </div>
-                      <h3 className="text-sm font-bold text-slate-900 break-words">
-                        {c.title}
-                      </h3>
-                      <p className="text-xs text-slate-500 break-words">{c.subtitle}</p>
+                      <div className="space-y-1 min-w-0">
+                        <div className="text-xs font-semibold text-blue-700">
+                          {c.grade} · {normalizeSubjectCategory(c.category) || c.category} ·{' '}
+                          <span className="tabular-nums">{lessonsCount} حصة</span> ·{' '}
+                          <span className="tabular-nums">{c.priceEgp} ج.م</span>
+                        </div>
+                        <h3 className="text-sm font-bold text-slate-900 break-words">
+                          {c.title}
+                        </h3>
+                        <div className="text-xs text-slate-600">
+                          المدرس: <span className="font-semibold text-slate-800">{resolveTeacherLabel(c.instructorId)}</span>
+                        </div>
+                      </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2 shrink-0">
                       <button
@@ -1179,16 +1527,14 @@ export function SupervisorDashboard({
                         <span>التحكم في الحصص والمحتوى</span>
                       </button>
 
-                      {!isBuiltIn && (
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteCourse(c.id)}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>حذف</span>
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCourse(c.id)}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>حذف</span>
+                      </button>
                     </div>
                   </div>
                 );
@@ -1233,8 +1579,8 @@ export function SupervisorDashboard({
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="sm:col-span-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="sm:col-span-2 lg:col-span-3">
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   اسم الكورس
                 </label>
@@ -1250,56 +1596,145 @@ export function SupervisorDashboard({
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  المرحلة الدراسية
+                  المدرس المربوط بالكورس
                 </label>
                 <select
-                  value={editingCourse.grade}
-                  onChange={(e) =>
+                  value={editingCourse.instructorId}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    const dynTeacher = teachers.find((t) => t.id === nextId);
+                    const builtTeacher = INSTRUCTORS.find((i) => i.id === nextId);
+                    const nextCategory = dynTeacher
+                      ? normalizeSubjectCategory(dynTeacher.subject) || editingCourse.category
+                      : editingCourse.category;
+                    const nextImage = dynTeacher?.image || builtTeacher?.image || editingCourse.image;
                     setEditingCourse({
                       ...editingCourse,
-                      grade: e.target.value as EducationalStage,
-                    })
-                  }
+                      instructorId: nextId,
+                      category: nextCategory,
+                      image: nextImage,
+                    });
+                  }}
                   className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
                 >
-                  {EDUCATIONAL_STAGES.map((st) => (
-                    <option key={st} value={st}>
-                      {st}
-                    </option>
-                  ))}
+                  {teachers.length > 0 && (
+                    <optgroup label="المدرسون المضافون">
+                      {teachers.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.subject})
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label="المدرسون الأساسيون">
+                    {INSTRUCTORS.map((inst) => (
+                      <option key={inst.id} value={inst.id}>
+                        {inst.name}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  السعر الشهري (ج.م)
+                  المادة الدراسية
                 </label>
-                <input
-                  type="number"
-                  min={0}
-                  value={editingCourse.priceEgp}
+                <select
+                  value={
+                    normalizeSubjectCategory(editingCourse.category) || PLATFORM_SUBJECTS[0]
+                  }
                   onChange={(e) =>
                     setEditingCourse({
                       ...editingCourse,
-                      priceEgp: Number(e.target.value) || 0,
+                      category: e.target.value,
                     })
                   }
-                  className="w-full px-3 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-                />
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                >
+                  {PLATFORM_SUBJECTS.map((subj) => (
+                    <option key={subj} value={subj}>
+                      {subj}
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              <div className="sm:col-span-2 lg:col-span-4">
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  وصف الكورس
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    المرحلة الدراسية
+                  </label>
+                  <select
+                    value={editingCourse.grade}
+                    onChange={(e) =>
+                      setEditingCourse({
+                        ...editingCourse,
+                        grade: e.target.value as EducationalStage,
+                      })
+                    }
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  >
+                    {EDUCATIONAL_STAGES.map((st) => (
+                      <option key={st} value={st}>
+                        {st}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    السعر (ج.م)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editingCourse.priceEgp}
+                    onChange={(e) =>
+                      setEditingCourse({
+                        ...editingCourse,
+                        priceEgp: Number(e.target.value) || 0,
+                      })
+                    }
+                    className="w-full px-3 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  />
+                </div>
+              </div>
+
+              <div className="sm:col-span-2 lg:col-span-3 pt-1">
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  صورة الكورس
                 </label>
-                <input
-                  type="text"
-                  value={editingCourse.subtitle}
-                  onChange={(e) =>
-                    setEditingCourse({ ...editingCourse, subtitle: e.target.value })
-                  }
-                  className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-                />
+                <div className="flex flex-wrap items-center gap-3">
+                  {editingCourse.image && (
+                    <img
+                      src={editingCourse.image}
+                      alt={editingCourse.title}
+                      className="w-24 h-14 object-cover rounded-lg border border-slate-200 bg-slate-100 shrink-0"
+                    />
+                  )}
+                  <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-800 bg-slate-50 border border-dashed border-slate-300 rounded-lg hover:bg-slate-100 cursor-pointer transition-colors">
+                    <ImagePlus className="w-4 h-4 text-blue-700" />
+                    <span>
+                      {uploadingKey === 'edit-course-img'
+                        ? 'جاري رفع الصورة...'
+                        : editingCourse.image
+                        ? 'تغيير صورة الكورس'
+                        : 'رفع صورة للكورس'}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        handleUploadCourseImage(file, 'edit');
+                      }}
+                    />
+                  </label>
+                </div>
               </div>
             </div>
           </div>
@@ -1360,6 +1795,7 @@ export function SupervisorDashboard({
                             {lesson.title}
                           </div>
                           <div className="text-xs text-slate-500 mt-0.5 tabular-nums">
+                            {lesson.durationMinutes > 0 ? `${lesson.durationMinutes} دقيقة · ` : ''}
                             {videos.length} فيديو · {attachments.length} ملف ·{' '}
                             {examQuestions.length} سؤال امتحان
                           </div>
@@ -1403,57 +1839,29 @@ export function SupervisorDashboard({
 
                     {isExpanded && (
                       <div className="p-4 sm:p-6 space-y-6">
-                        {/* Lesson Meta */}
-                        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-                          <div className="sm:col-span-3">
-                            <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        {/* Lesson Title & Auto Duration Note */}
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <label className="block text-xs font-semibold text-slate-700">
                               عنوان الحصة
                             </label>
-                            <input
-                              type="text"
-                              value={lesson.title}
-                              onChange={(e) =>
-                                updateLessonField(lesson.id, (les) => ({
-                                  ...les,
-                                  title: e.target.value,
-                                }))
-                              }
-                              className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-                            />
+                            <span className="text-xs text-slate-500 tabular-nums">
+                              {lesson.durationMinutes > 0
+                                ? `المدة التلقائية للحصة: ${lesson.durationMinutes} دقيقة`
+                                : 'مدة الحصة تُحسب تلقائيًا من الفيديوهات'}
+                            </span>
                           </div>
-                          <div>
-                            <label className="block text-xs font-semibold text-slate-700 mb-1">
-                              المدة (بالدقائق)
-                            </label>
-                            <input
-                              type="number"
-                              min={1}
-                              value={lesson.durationMinutes}
-                              onChange={(e) =>
-                                updateLessonField(lesson.id, (les) => ({
-                                  ...les,
-                                  durationMinutes: Number(e.target.value) || 30,
-                                }))
-                              }
-                              className="w-full px-3 py-2 text-sm font-mono bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-                            />
-                          </div>
-                          <div className="sm:col-span-4">
-                            <label className="block text-xs font-semibold text-slate-700 mb-1">
-                              ملخص شرح الحصة
-                            </label>
-                            <textarea
-                              rows={2}
-                              value={lesson.summary}
-                              onChange={(e) =>
-                                updateLessonField(lesson.id, (les) => ({
-                                  ...les,
-                                  summary: e.target.value,
-                                }))
-                              }
-                              className="w-full p-3 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-                            />
-                          </div>
+                          <input
+                            type="text"
+                            value={lesson.title}
+                            onChange={(e) =>
+                              updateLessonField(lesson.id, (les) => ({
+                                ...les,
+                                title: e.target.value,
+                              }))
+                            }
+                            className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                          />
                         </div>
 
                         {/* Section 1: Multiple Videos (Link + Upload) */}
@@ -1542,7 +1950,7 @@ export function SupervisorDashboard({
                               />
                               <button
                                 type="button"
-                                onClick={() => handleAddVideoLink(lesson.id)}
+                                onClick={() => void handleAddVideoLink(lesson.id)}
                                 className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 cursor-pointer"
                               >
                                 <Plus className="w-3.5 h-3.5" />
@@ -1741,100 +2149,137 @@ export function SupervisorDashboard({
                           </div>
 
                           <div className="space-y-4">
-                            {examQuestions.map((q, qIdx) => (
-                              <div
-                                key={qIdx}
-                                className="p-4 rounded-lg bg-white border border-slate-200 space-y-3"
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="text-xs font-bold text-blue-700 tabular-nums">
-                                    السؤال {qIdx + 1}
-                                  </span>
-                                  {examQuestions.length > 1 && (
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        handleDeleteExamQuestion(lesson.id, qIdx)
-                                      }
-                                      className="text-xs font-semibold text-red-700 hover:underline cursor-pointer"
-                                    >
-                                      حذف السؤال
-                                    </button>
-                                  )}
-                                </div>
-
-                                <input
-                                  type="text"
-                                  value={q.question}
-                                  onChange={(e) =>
-                                    handleUpdateExamQuestion(lesson.id, qIdx, (prevQ) => ({
-                                      ...prevQ,
-                                      question: e.target.value,
-                                    }))
-                                  }
-                                  placeholder="نص السؤال..."
-                                  className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg"
-                                />
-
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                                  {q.options.map((opt, oIdx) => (
-                                    <div
-                                      key={oIdx}
-                                      className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 bg-slate-50"
-                                    >
-                                      <input
-                                        type="radio"
-                                        name={`correct-${lesson.id}-${qIdx}`}
-                                        checked={q.correctIndex === oIdx}
-                                        onChange={() =>
-                                          handleUpdateExamQuestion(
-                                            lesson.id,
-                                            qIdx,
-                                            (prevQ) => ({
-                                              ...prevQ,
-                                              correctIndex: oIdx,
-                                            })
-                                          )
+                            {examQuestions.map((q, qIdx) => {
+                              const isUploadingImg =
+                                uploadingKey === `quiz-img-${lesson.id}-${qIdx}`;
+                              return (
+                                <div
+                                  key={qIdx}
+                                  className="p-4 rounded-lg bg-white border border-slate-200 space-y-3"
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-xs font-bold text-blue-700 tabular-nums">
+                                      السؤال {qIdx + 1}
+                                    </span>
+                                    {examQuestions.length > 1 && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleDeleteExamQuestion(lesson.id, qIdx)
                                         }
-                                        title="تحديد كإجابة صحيحة"
-                                        className="accent-blue-700 shrink-0 cursor-pointer"
-                                      />
-                                      <input
-                                        type="text"
-                                        value={opt}
-                                        onChange={(e) =>
-                                          handleUpdateExamQuestion(
-                                            lesson.id,
-                                            qIdx,
-                                            (prevQ) => ({
-                                              ...prevQ,
-                                              options: prevQ.options.map((item, idx) =>
-                                                idx === oIdx ? e.target.value : item
-                                              ),
-                                            })
-                                          )
-                                        }
-                                        placeholder={`الاختيار ${oIdx + 1}`}
-                                        className="flex-1 min-w-0 bg-white px-2.5 py-1 text-xs border border-slate-200 rounded"
-                                      />
+                                        className="text-xs font-semibold text-red-700 hover:underline cursor-pointer"
+                                      >
+                                        حذف السؤال
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  <div className="space-y-2.5">
+                                    <div className="flex flex-wrap items-center gap-2.5">
+                                      <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-900 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 cursor-pointer">
+                                        <ImagePlus className="w-4 h-4 text-blue-700" />
+                                        <span>
+                                          {isUploadingImg
+                                            ? 'جاري رفع صورة السؤال...'
+                                            : q.questionImage
+                                            ? 'تغيير صورة السؤال'
+                                            : 'رفع صورة السؤال'}
+                                        </span>
+                                        <input
+                                          type="file"
+                                          accept="image/*"
+                                          disabled={isUploadingImg}
+                                          onChange={(e) => {
+                                            const file = e.target.files?.[0];
+                                            e.target.value = '';
+                                            void handleUploadQuizQuestionImage(
+                                              lesson.id,
+                                              qIdx,
+                                              file
+                                            );
+                                          }}
+                                          className="hidden"
+                                        />
+                                      </label>
+
+                                      {q.questionImage && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            handleUpdateExamQuestion(
+                                              lesson.id,
+                                              qIdx,
+                                              (prevQ) => ({
+                                                ...prevQ,
+                                                questionImage: '',
+                                              })
+                                            )
+                                          }
+                                          className="px-2.5 py-1.5 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 cursor-pointer"
+                                        >
+                                          إزالة الصورة
+                                        </button>
+                                      )}
                                     </div>
-                                  ))}
-                                </div>
 
-                                <input
-                                  type="text"
-                                  value={q.explanation}
-                                  onChange={(e) =>
-                                    handleUpdateExamQuestion(lesson.id, qIdx, (prevQ) => ({
-                                      ...prevQ,
-                                      explanation: e.target.value,
-                                    }))
-                                  }
-                                  placeholder="تفسير الإجابة الصحيحة (يظهر للطالب بعد الحل)..."
-                                  className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg"
-                                />
-                              </div>
-                            ))}
+                                    {q.questionImage && (
+                                      <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+                                        <img
+                                          src={q.questionImage}
+                                          alt={`صورة السؤال ${qIdx + 1}`}
+                                          className="w-full max-h-72 object-contain mx-auto"
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                    {q.options.map((opt, oIdx) => (
+                                      <div
+                                        key={oIdx}
+                                        className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 bg-slate-50"
+                                      >
+                                        <input
+                                          type="radio"
+                                          name={`correct-${lesson.id}-${qIdx}`}
+                                          checked={q.correctIndex === oIdx}
+                                          onChange={() =>
+                                            handleUpdateExamQuestion(
+                                              lesson.id,
+                                              qIdx,
+                                              (prevQ) => ({
+                                                ...prevQ,
+                                                correctIndex: oIdx,
+                                              })
+                                            )
+                                          }
+                                          title="تحديد كإجابة صحيحة"
+                                          className="accent-blue-700 shrink-0 cursor-pointer"
+                                        />
+                                        <input
+                                          type="text"
+                                          value={opt}
+                                          onChange={(e) =>
+                                            handleUpdateExamQuestion(
+                                              lesson.id,
+                                              qIdx,
+                                              (prevQ) => ({
+                                                ...prevQ,
+                                                options: prevQ.options.map((item, idx) =>
+                                                  idx === oIdx ? e.target.value : item
+                                                ),
+                                              })
+                                            )
+                                          }
+                                          placeholder={`الاختيار ${oIdx + 1}`}
+                                          className="flex-1 min-w-0 bg-white px-2.5 py-1 text-xs border border-slate-200 rounded"
+                                        />
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       </div>
@@ -1868,8 +2313,174 @@ export function SupervisorDashboard({
         </div>
       )}
 
+      {activeTab === 'low-attendance' && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
+            <div className="relative flex-1 max-w-md">
+              <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="ابحث باسم الطالب أو رقم الهاتف..."
+                aria-label="بحث في طلاب الحضور المنخفض"
+                className="w-full pr-10 pl-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <select
+                aria-label="تصفية حسب المرحلة"
+                value={stageFilter}
+                onChange={(e) => setStageFilter(e.target.value)}
+                className="px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+              >
+                <option value="جميع المراحل">جميع المراحل</option>
+                {EDUCATIONAL_STAGES.map((st) => (
+                  <option key={st} value={st}>
+                    {st}
+                  </option>
+                ))}
+              </select>
+
+              {filteredLowAttendanceRows.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    openAlertComposer(filteredLowAttendanceRows.map((r) => r.student))
+                  }
+                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-colors cursor-pointer"
+                >
+                  <Bell className="w-4 h-4" />
+                  <span>
+                    إرسال تنبيه للجميع ({filteredLowAttendanceRows.length})
+                  </span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div className="px-5 sm:px-6 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600" />
+                <h2 className="text-base font-bold text-slate-900">
+                  الطلاب أصحاب نسبة حضور أقل من 50%
+                </h2>
+              </div>
+              <span className="text-xs text-slate-500 tabular-nums">
+                {filteredLowAttendanceRows.length} طالب
+              </span>
+            </div>
+
+            {loading ? (
+              <div className="p-10 text-center text-sm text-slate-500">
+                جاري تحميل بيانات الحضور...
+              </div>
+            ) : filteredLowAttendanceRows.length === 0 ? (
+              <div className="p-10 text-center space-y-2">
+                <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto" />
+                <div className="text-sm font-bold text-slate-900">
+                  لا يوجد طلاب بنسبة حضور أقل من 50% حاليًا
+                </div>
+                <p className="text-xs text-slate-500">
+                  جميع الطلاب المطابقين للتصفية يحافظون على نسبة حضور 50% فأعلى.
+                </p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {filteredLowAttendanceRows.map(({ student, attendance }) => {
+                  const sentNotifs = student.notifications ?? [];
+                  const unreadCount = sentNotifs.filter((n) => !n.read).length;
+                  return (
+                    <div
+                      key={student.id}
+                      className="p-4 sm:px-6 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-50/70"
+                    >
+                      <div className="space-y-1.5 min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-bold text-slate-900">
+                            {student.studentName}
+                          </span>
+                          <span className="px-2 py-0.5 text-xs font-bold bg-red-50 text-red-700 border border-red-200 rounded tabular-nums">
+                            نسبة الحضور: {attendance.rate}%
+                          </span>
+                          {student.isBlocked && (
+                            <span className="px-2 py-0.5 text-[11px] font-semibold bg-red-100 text-red-700 rounded">
+                              محظور
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600">
+                          <span className="font-mono tabular-nums" dir="ltr">
+                            {student.studentPhone}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span>{student.stage}</span>
+                          <span aria-hidden="true">·</span>
+                          <span className="tabular-nums">
+                            سمع {attendance.watchedCount} من {attendance.totalLessons} حصة
+                          </span>
+                        </div>
+
+                        <div className="w-full max-w-xs h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-red-600"
+                            style={{ width: `${attendance.rate}%` }}
+                          />
+                        </div>
+
+                        {sentNotifs.length > 0 && (
+                          <div className="text-[11px] text-blue-700 font-medium tabular-nums">
+                            تم إرسال {sentNotifs.length} تنبيه
+                            {unreadCount > 0 ? ` (${unreadCount} لم يُقرأ بعد)` : ' (تم الاطلاع)'}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => openAlertComposer([student])}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors cursor-pointer"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          <span>إرسال تنبيه</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {activeTab === 'students' && (
         <>
+          {lowAttendanceRows.length > 0 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 text-xs sm:text-sm font-semibold text-amber-950">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  يوجد{' '}
+                  <span className="font-bold tabular-nums">{lowAttendanceRows.length}</span>{' '}
+                  طالب لديهم نسبة حضور أقل من 50% ويحتاجون لمتابعة.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('low-attendance')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-colors cursor-pointer"
+              >
+                <Bell className="w-3.5 h-3.5" />
+                <span>عرض القائمة وإرسال تنبيه</span>
+              </button>
+            </div>
+          )}
+
           <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
             <div className="relative flex-1 max-w-md">
               <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1905,14 +2516,25 @@ export function SupervisorDashboard({
           )}
 
           <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-5 sm:px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+            <div className="px-5 sm:px-6 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Users className="w-4 h-4 text-blue-700" />
                 <h2 className="text-base font-bold text-slate-900">سجل بيانات الطلاب الكامل</h2>
               </div>
-              <span className="text-xs text-slate-500 tabular-nums">
-                {filteredStudents.length} طالب
-              </span>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void loadStudents()}
+                  disabled={loading}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-60 transition-colors cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                  <span>تحديث القائمة</span>
+                </button>
+                <span className="text-xs text-slate-500 tabular-nums">
+                  {filteredStudents.length} طالب
+                </span>
+              </div>
             </div>
 
             {loading ? (
@@ -1920,8 +2542,18 @@ export function SupervisorDashboard({
                 جاري تحميل بيانات الطلاب...
               </div>
             ) : filteredStudents.length === 0 ? (
-              <div className="p-10 text-center text-sm text-slate-500">
-                لا يوجد طلاب مطابقون لبحثك الحالي.
+              <div className="p-10 text-center space-y-2">
+                <Users className="w-8 h-8 text-slate-300 mx-auto" />
+                <div className="text-sm font-bold text-slate-800">
+                  {students.length === 0
+                    ? 'لا يوجد طلاب مسجلون حتى الآن'
+                    : 'لا يوجد طلاب مطابقون لبحثك الحالي.'}
+                </div>
+                {students.length === 0 && (
+                  <p className="text-xs text-slate-500">
+                    أي طالب يسجل حسابه أو يدخل المنصة سيظهر اسمه وبياناته هنا تلقائيًا.
+                  </p>
+                )}
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -1945,53 +2577,68 @@ export function SupervisorDashboard({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredStudents.map((stu) => (
-                      <tr key={stu.id} className="hover:bg-slate-50/70">
-                        <td className="py-4 px-4">
-                          <div className="font-bold text-slate-900">{stu.studentName}</div>
-                          <div
-                            className="font-mono text-xs text-slate-500 mt-0.5 tabular-nums"
-                            dir="ltr"
-                          >
-                            {stu.studentPhone}
-                          </div>
-                        </td>
-                        <td className="py-4 px-4">
-                          <div className="font-medium text-slate-800">{stu.parentName}</div>
-                          <div
-                            className="font-mono text-xs text-slate-500 mt-0.5 tabular-nums"
-                            dir="ltr"
-                          >
-                            {stu.parentPhone}
-                          </div>
-                        </td>
-                        <td className="py-4 px-4 text-slate-700">{stu.motherName}</td>
-                        <td className="py-4 px-4">
-                          <div className="font-medium text-slate-900">{stu.stage}</div>
-                          <div className="text-xs text-blue-700 mt-0.5">
-                            {stu.specializationType}: {stu.specialization}
-                          </div>
-                        </td>
-                        <td className="py-4 px-4 tabular-nums">
-                          <div className="font-semibold text-slate-900">
-                            حضور {stu.attendanceRate}%
-                          </div>
-                          <div className="text-xs text-slate-500 mt-0.5">
-                            {stu.completedLessonIds.length} حصص · {stu.unlockedCourseIds.length}{' '}
-                            كورسات
-                          </div>
-                        </td>
-                        <td className="py-4 px-4">
-                          <button
-                            type="button"
-                            onClick={() => openStudentFollowUp(stu)}
-                            className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap cursor-pointer"
-                          >
-                            متابعة وتعديل
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredStudents.map((stu) => {
+                      const autoAtt = computeStudentAttendance(stu, allCourses);
+                      const attendedDays = getDistinctAttendanceDays(stu.attendanceDates);
+                      return (
+                        <tr key={stu.id} className="hover:bg-slate-50/70">
+                          <td className="py-4 px-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-bold text-slate-900">{stu.studentName}</span>
+                              {stu.isBlocked && (
+                                <span className="px-2 py-0.5 text-[11px] font-semibold bg-red-100 text-red-700 rounded">
+                                  محظور
+                                </span>
+                              )}
+                            </div>
+                            <div
+                              className="font-mono text-xs text-slate-500 mt-0.5 tabular-nums"
+                              dir="ltr"
+                            >
+                              {stu.studentPhone}
+                            </div>
+                          </td>
+                          <td className="py-4 px-4">
+                            <div className="font-medium text-slate-800">{stu.parentName}</div>
+                            <div
+                              className="font-mono text-xs text-slate-500 mt-0.5 tabular-nums"
+                              dir="ltr"
+                            >
+                              {stu.parentPhone}
+                            </div>
+                          </td>
+                          <td className="py-4 px-4 text-slate-700">{stu.motherName}</td>
+                          <td className="py-4 px-4">
+                            <div className="font-medium text-slate-900">{stu.stage}</div>
+                            <div className="text-xs text-blue-700 mt-0.5">
+                              {stu.specializationType}: {stu.specialization}
+                            </div>
+                          </td>
+                          <td className="py-4 px-4 tabular-nums">
+                            <div className="font-semibold text-slate-900">
+                              حضور {autoAtt.rate}%
+                            </div>
+                            <div className="text-xs text-slate-500 mt-0.5">
+                              المحفظة: {stu.walletBalance ?? 0} ج.م · {(stu.activeDeviceIds?.length ?? 0)} جهاز
+                            </div>
+                            {attendedDays.length > 0 && (
+                              <div className="text-[11px] text-blue-700 mt-0.5">
+                                آخر حضور: {formatAttendanceDateArabic(attendedDays[0])} ({attendedDays.length} يوم)
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-4 px-4">
+                            <button
+                              type="button"
+                              onClick={() => openStudentFollowUp(stu)}
+                              className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap cursor-pointer"
+                            >
+                              متابعة وتعديل
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2063,71 +2710,123 @@ export function SupervisorDashboard({
               </div>
 
               <form onSubmit={handleSaveFollowUp} className="space-y-4">
-                <div>
-                  <div className="flex justify-between text-xs font-semibold text-slate-700 mb-1.5">
-                    <label htmlFor="sup-attendance-slider">نسبة الحضور والالتزام</label>
-                    <span className="font-mono text-blue-700 tabular-nums">{editAttendance}%</span>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="p-2.5 rounded-lg bg-blue-100 text-blue-700 shrink-0">
+                      <Laptop className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-500">الأجهزة الفاتحة للحساب</div>
+                      <div className="text-sm font-bold text-slate-900 tabular-nums">
+                        {resetDevicesFlag ? 0 : editDevicesCount} جهاز مسجّل
+                      </div>
+                    </div>
                   </div>
-                  <input
-                    id="sup-attendance-slider"
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={editAttendance}
-                    onChange={(e) => setEditAttendance(Number(e.target.value))}
-                    className="w-full accent-blue-700 cursor-pointer"
-                  />
+                  {editDevicesCount > 0 && !resetDevicesFlag && (
+                    <button
+                      type="button"
+                      onClick={() => setResetDevicesFlag(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>تصفير الأجهزة</span>
+                    </button>
+                  )}
                 </div>
 
-                <div>
-                  <span className="block text-xs font-semibold text-slate-700 mb-2">
-                    الكورسات المفعلة للطالب ({selectedStudent.stage})
-                  </span>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto">
-                    {allCourses
-                      .filter((c) => c.grade === selectedStudent.stage)
-                      .map((c) => {
-                        const active = editCourses.includes(c.id);
-                        return (
-                          <button
-                            key={c.id}
-                            type="button"
-                            onClick={() => toggleCourseForStudent(c.id)}
-                            className={`w-full min-w-0 overflow-hidden p-2.5 text-right rounded-lg border text-xs transition-colors flex items-center justify-between gap-2 cursor-pointer ${
-                              active
-                                ? 'bg-blue-50 border-blue-300 text-blue-950 font-semibold'
-                                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                            }`}
-                          >
-                            <span className="truncate min-w-0 flex-1">{c.title}</span>
-                            {active && <CheckCircle2 className="w-4 h-4 text-blue-700 shrink-0" />}
-                          </button>
-                        );
-                      })}
+                <div
+                  className={`rounded-xl border p-4 flex flex-wrap items-center justify-between gap-3 ${
+                    editBlocked
+                      ? 'border-red-200 bg-red-50/70'
+                      : 'border-slate-200 bg-slate-50'
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div
+                      className={`p-2.5 rounded-lg shrink-0 ${
+                        editBlocked ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+                      }`}
+                    >
+                      <Ban className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-500">حالة الحساب</div>
+                      <div
+                        className={`text-sm font-bold ${
+                          editBlocked ? 'text-red-700' : 'text-emerald-700'
+                        }`}
+                      >
+                        {editBlocked ? 'الحساب محظور (بلوك)' : 'الحساب نشط'}
+                      </div>
+                    </div>
                   </div>
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="sup-notes-input"
-                    className="block text-xs font-semibold text-slate-700 mb-1.5"
+                  <button
+                    type="button"
+                    onClick={() => setEditBlocked((b) => !b)}
+                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                      editBlocked
+                        ? 'bg-emerald-700 border-emerald-700 text-white hover:bg-emerald-800'
+                        : 'bg-red-600 border-red-600 text-white hover:bg-red-700'
+                    }`}
                   >
-                    ملاحظات المتابعة
-                  </label>
-                  <textarea
-                    id="sup-notes-input"
-                    rows={3}
-                    value={editNotes}
-                    onChange={(e) => setEditNotes(e.target.value)}
-                    className="w-full p-3 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
-                  />
+                    <Ban className="w-3.5 h-3.5" />
+                    <span>{editBlocked ? 'إلغاء البلوك' : 'عمل بلوك للحساب'}</span>
+                  </button>
+                </div>
+
+                <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                      <Wallet className="w-4 h-4 text-blue-700 shrink-0" />
+                      <span>إضافة فلوس لمحفظة الحساب</span>
+                    </div>
+                    <div className="text-xs font-semibold text-blue-800 tabular-nums">
+                      الرصيد الحالي: {selectedStudent.walletBalance ?? 0} ج.م
+                      {(Number(editWalletAdd) || 0) > 0 && (
+                        <span className="text-emerald-700 mr-1.5">
+                          ← الإجمالي بعد الحفظ:{' '}
+                          {(selectedStudent.walletBalance ?? 0) +
+                            Math.max(0, Math.round(Number(editWalletAdd) || 0))}{' '}
+                          ج.م
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    <input
+                      id="sup-wallet-add-input"
+                      type="number"
+                      min={0}
+                      step={10}
+                      value={editWalletAdd}
+                      onChange={(e) => setEditWalletAdd(e.target.value)}
+                      placeholder="اكتب المبلغ المراد إضافته بالجنيه..."
+                      className="flex-1 px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700 tabular-nums"
+                    />
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {[100, 250, 500].map((amt) => (
+                        <button
+                          key={amt}
+                          type="button"
+                          onClick={() =>
+                            setEditWalletAdd((prev) =>
+                              String(Math.max(0, Math.round(Number(prev) || 0)) + amt)
+                            )
+                          }
+                          className="px-2.5 py-2 text-xs font-semibold text-blue-800 bg-white border border-blue-200 rounded-lg hover:bg-blue-100 tabular-nums cursor-pointer"
+                        >
+                          +{amt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
                 {savedNotice && (
                   <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-900 flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-                    <span>تم حفظ التعديلات وتحديث ملف الطالب بنجاح.</span>
+                    <span>تم حفظ التعديلات وتحديث حساب الطالب بنجاح.</span>
                   </div>
                 )}
 
@@ -2145,7 +2844,120 @@ export function SupervisorDashboard({
                     className="inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors cursor-pointer"
                   >
                     <Save className="w-4 h-4" />
-                    <span>{saving ? 'جاري الحفظ...' : 'حفظ المتابعة'}</span>
+                    <span>{saving ? 'جاري الحفظ...' : 'حفظ التعديلات'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {alertTargets && (
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 p-3 sm:p-4 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="sup-alert-modal-title"
+        >
+          <div className="min-h-full flex items-center justify-center py-4">
+            <div className="bg-white rounded-xl border border-slate-200 max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-5">
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="p-2 rounded-lg bg-amber-50 text-amber-700 shrink-0">
+                    <Bell className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3
+                      id="sup-alert-modal-title"
+                      className="text-base sm:text-lg font-bold text-slate-900"
+                    >
+                      إرسال تنبيه داخل المنصة
+                    </h3>
+                    <p className="text-xs text-slate-500 truncate">
+                      {alertTargets.length === 1
+                        ? `إلى الطالب: ${alertTargets[0].studentName}`
+                        : `إرسال جماعي إلى ${alertTargets.length} طالب (نسبة الحضور < 50%)`}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAlertTargets(null)}
+                  aria-label="إغلاق"
+                  className="p-2 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 shrink-0"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSendAlertsSubmit} className="space-y-4">
+                <div>
+                  <label
+                    htmlFor="alert-title-input"
+                    className="block text-xs font-semibold text-slate-700 mb-1"
+                  >
+                    عنوان التنبيه
+                  </label>
+                  <input
+                    id="alert-title-input"
+                    type="text"
+                    required
+                    maxLength={120}
+                    value={alertTitle}
+                    onChange={(e) => setAlertTitle(e.target.value)}
+                    className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="alert-msg-input"
+                    className="block text-xs font-semibold text-slate-700 mb-1"
+                  >
+                    نص الرسالة للطالب
+                  </label>
+                  <textarea
+                    id="alert-msg-input"
+                    rows={4}
+                    required
+                    maxLength={500}
+                    value={alertMessage}
+                    onChange={(e) => setAlertMessage(e.target.value)}
+                    className="w-full p-3 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-700"
+                  />
+                </div>
+
+                {alertFeedback && (
+                  <div
+                    className={`p-3 rounded-lg border text-xs font-semibold flex items-center gap-2 ${
+                      alertFeedback.type === 'ok'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                        : 'bg-red-50 border-red-200 text-red-900'
+                    }`}
+                  >
+                    {alertFeedback.type === 'ok' && (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                    )}
+                    <span>{alertFeedback.text}</span>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setAlertTargets(null)}
+                    className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+                  >
+                    إغلاق
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={alertSending}
+                    className="inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    <Send className="w-4 h-4" />
+                    <span>{alertSending ? 'جاري الإرسال...' : 'إرسال التنبيه الآن'}</span>
                   </button>
                 </div>
               </form>
